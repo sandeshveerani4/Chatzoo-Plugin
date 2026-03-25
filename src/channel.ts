@@ -53,7 +53,7 @@ export function buildChannel() {
 
     capabilities: {
       chatTypes: ["direct" as const, "thread" as const],
-      media: false,
+      media: true,
       threads: true,
       reactions: false,
       edit: false,
