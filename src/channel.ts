@@ -5,7 +5,11 @@
  */
 import { deliverMessage } from "./outbound.js";
 import { sendStreamEvent } from "./outbound.js";
-import { appendStreamChunk, isStreamActive } from "./streamState.js";
+import {
+  appendStreamChunk,
+  appendStreamMedia,
+  isStreamActive,
+} from "./streamState.js";
 
 export interface ChannelConfig {
   gatewayUrl: string;
@@ -125,27 +129,26 @@ export function buildChannel() {
           ...(rest.mediaUrl != null ? [rest.mediaUrl] : []),
           ...(Array.isArray(rest.mediaUrls) ? rest.mediaUrls : []),
         ];
-        const mediaMarkdown: string[] = [];
+        // Convert filesystem paths to gateway-relative storagePaths that the
+        // app fetches via fetchImage(storagePath) → GET /v1/<storagePath> with
+        // Firebase auth. This mirrors exactly how normal chat imageUrls work.
+        const storagePaths: string[] = [];
         const seen = new Set<string>();
         for (const p of rawPaths) {
           if (typeof p !== "string" || seen.has(p)) continue;
           seen.add(p);
-          // Only handle absolute filesystem paths; HTTP URLs are handled by the
-          // gateway's rewriteMediaUrls function.
           if (!p.startsWith("/")) continue;
-          if (p.includes("..")) continue; // reject traversal attempts
+          if (p.includes("..")) continue;
           const relative = p.startsWith(OPENCLAW_ROOT)
             ? p.slice(OPENCLAW_ROOT.length)
             : p.slice(1);
           if (!relative) continue;
-          const proxyUrl = `${account.gatewayUrl}/v1/computer/media?path=${encodeURIComponent(relative)}`;
-          mediaMarkdown.push(`![media](${proxyUrl})`);
+          storagePaths.push(
+            `computer/media?path=${encodeURIComponent(relative)}`,
+          );
         }
-        const fullText = mediaMarkdown.length
-          ? text
-            ? `${text}\n\n${mediaMarkdown.join("\n")}`
-            : mediaMarkdown.join("\n")
-          : text;
+        // Text stays clean — images arrive as imageUrls in the done event.
+        const fullText = text;
         if (!account.gatewayUrl || !account.hookToken) {
           throw new Error(
             "chatzoo: gatewayUrl and hookToken are required in config",
@@ -156,6 +159,8 @@ export function buildChannel() {
         // call sendText multiple times with partial chunks. In that mode we
         // forward chunks as stream deltas and defer persistence to stream end.
         if (isStreamActive(String(to))) {
+          if (storagePaths.length > 0)
+            appendStreamMedia(String(to), storagePaths);
           appendStreamChunk(String(to), fullText);
           await sendStreamEvent({
             gatewayUrl: account.gatewayUrl,

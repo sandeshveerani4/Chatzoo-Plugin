@@ -3,6 +3,7 @@ type StreamState = {
   startedAt: number;
   pendingDelta: string;
   lastDeltaFlushAt: number;
+  mediaUrls: string[];
 };
 
 const activeStreams = new Map<string, StreamState>();
@@ -14,6 +15,7 @@ export function beginStream(threadId: string): void {
     startedAt: now,
     pendingDelta: "",
     lastDeltaFlushAt: now,
+    mediaUrls: [],
   });
 }
 
@@ -56,6 +58,22 @@ export function takeRemainingDelta(threadId: string): string | undefined {
 
 export function readAccumulatedStream(threadId: string): string {
   return activeStreams.get(threadId)?.accumulated ?? "";
+}
+
+export function appendStreamMedia(threadId: string, paths: string[]): void {
+  const state = activeStreams.get(threadId);
+  if (!state || paths.length === 0) return;
+  const seen = new Set(state.mediaUrls);
+  for (const p of paths) {
+    if (!seen.has(p)) {
+      state.mediaUrls.push(p);
+      seen.add(p);
+    }
+  }
+}
+
+export function readAccumulatedMedia(threadId: string): string[] {
+  return activeStreams.get(threadId)?.mediaUrls ?? [];
 }
 
 export function endStream(threadId: string): void {

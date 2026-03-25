@@ -49,6 +49,7 @@ export interface StreamEventOptions {
         conversationId: string;
         assistantMessage: string;
         messageId: string;
+        imageUrls?: string[];
       }
     | {
         type: "agent.stream.error";

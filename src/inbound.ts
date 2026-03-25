@@ -15,9 +15,11 @@ import { runtimeStore } from "./client.js";
 import { deliverMessage, sendStreamEvent } from "./outbound.js";
 import {
   appendStreamChunk,
+  appendStreamMedia,
   beginStream,
   endStream,
   readAccumulatedStream,
+  readAccumulatedMedia,
 } from "./streamState.js";
 
 interface InboundBody {
@@ -294,6 +296,7 @@ export async function handleInbound(
       // All tokens were already streamed via onPartialReply (which also called
       // appendStreamChunk). Build the final message from the accumulator.
       const assistantMessage = readAccumulatedStream(data.conversationId);
+      const imageUrls = readAccumulatedMedia(data.conversationId);
       const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 
       runtime.log?.info?.(
@@ -312,6 +315,7 @@ export async function handleInbound(
               conversationId: data.conversationId,
               assistantMessage,
               messageId,
+              ...(imageUrls.length > 0 ? { imageUrls } : {}),
             },
           });
           runtime.log?.info?.(`chatzoo inbound: done event sent`);
