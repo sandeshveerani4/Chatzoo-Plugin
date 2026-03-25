@@ -113,8 +113,39 @@ export function buildChannel() {
     outbound: {
       deliveryMode: "gateway" as const,
       textChunkLimit: 4000,
-      sendText: async ({ to, text, accountId, cfg }: any) => {
+      sendText: async ({ to, text, accountId, cfg, ...rest }: any) => {
         const account = resolveAccount(cfg ?? {}, accountId);
+
+        // OpenClaw's built-in `message` tool passes media as absolute filesystem
+        // paths (e.g. /home/openclaw/.openclaw/media/browser/abc.jpg).
+        // Convert them to gateway proxy URLs and append as markdown images so the
+        // app can fetch and display them.
+        const OPENCLAW_ROOT = "/home/openclaw/.openclaw/";
+        const rawPaths: unknown[] = [
+          ...(rest.mediaUrl != null ? [rest.mediaUrl] : []),
+          ...(Array.isArray(rest.mediaUrls) ? rest.mediaUrls : []),
+        ];
+        const mediaMarkdown: string[] = [];
+        const seen = new Set<string>();
+        for (const p of rawPaths) {
+          if (typeof p !== "string" || seen.has(p)) continue;
+          seen.add(p);
+          // Only handle absolute filesystem paths; HTTP URLs are handled by the
+          // gateway's rewriteMediaUrls function.
+          if (!p.startsWith("/")) continue;
+          if (p.includes("..")) continue; // reject traversal attempts
+          const relative = p.startsWith(OPENCLAW_ROOT)
+            ? p.slice(OPENCLAW_ROOT.length)
+            : p.slice(1);
+          if (!relative) continue;
+          const proxyUrl = `${account.gatewayUrl}/v1/computer/media?path=${encodeURIComponent(relative)}`;
+          mediaMarkdown.push(`![media](${proxyUrl})`);
+        }
+        const fullText = mediaMarkdown.length
+          ? text
+            ? `${text}\n\n${mediaMarkdown.join("\n")}`
+            : mediaMarkdown.join("\n")
+          : text;
         if (!account.gatewayUrl || !account.hookToken) {
           throw new Error(
             "chatzoo: gatewayUrl and hookToken are required in config",
@@ -125,14 +156,14 @@ export function buildChannel() {
         // call sendText multiple times with partial chunks. In that mode we
         // forward chunks as stream deltas and defer persistence to stream end.
         if (isStreamActive(String(to))) {
-          appendStreamChunk(String(to), text);
+          appendStreamChunk(String(to), fullText);
           await sendStreamEvent({
             gatewayUrl: account.gatewayUrl,
             hookToken: account.hookToken,
             event: {
               type: "agent.stream.delta",
               conversationId: String(to),
-              text,
+              text: fullText,
             },
           });
 
@@ -150,7 +181,7 @@ export function buildChannel() {
           hookToken: account.hookToken,
           deliveryTimeoutMs: account.deliveryTimeoutMs,
           threadId: String(to),
-          content: text,
+          content: fullText,
           messageId: generatedMessageId,
         });
         return {
