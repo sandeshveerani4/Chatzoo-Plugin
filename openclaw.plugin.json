@@ -1,0 +1,40 @@
+{
+  "id": "chatzoo",
+  "name": "ChatZoo",
+  "description": "Real-time bridge between OpenClaw and the ChatZoo iOS app backend. Replaces RPC-based communication with an event-driven channel plugin.",
+  "version": "1.0.0",
+  "channels": ["chatzoo"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["gatewayUrl", "hookToken"],
+    "properties": {
+      "gatewayUrl": {
+        "type": "string",
+        "description": "ChatZoo llm-gateway base URL"
+      },
+      "hookToken": {
+        "type": "string",
+        "description": "Shared secret (hookToken from ComputerInstance) for authenticating webhook calls"
+      },
+      "deliveryTimeoutMs": {
+        "type": "number",
+        "default": 3000,
+        "description": "Milliseconds to wait for in-app delivery before falling back to push notification"
+      }
+    }
+  },
+  "uiHints": {
+    "gatewayUrl": {
+      "label": "Gateway URL",
+      "placeholder": "https://llm-gateway-xxx.run.app"
+    },
+    "hookToken": {
+      "label": "Hook Token",
+      "sensitive": true
+    },
+    "deliveryTimeoutMs": {
+      "label": "In-app delivery timeout (ms)"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "chatzoo",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "setupEntry": "./src/setup-entry.ts",
+    "channel": {
+      "id": "chatzoo",
+      "label": "ChatZoo",
+      "blurb": "Connects OpenClaw to the ChatZoo iOS app via event-driven webhooks"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "dependencies": {
+    "openclaw": "*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Tarballs / build artifacts
+*.tar.gz
+*.tgz
+*.zip
+
+# Local env / secrets
+.env
+.env.*
+*.local
+
+# Editor / tool local config
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
