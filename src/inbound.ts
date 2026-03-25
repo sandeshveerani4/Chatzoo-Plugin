@@ -10,7 +10,6 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
 import { runtimeStore } from "./client.js";
 import { deliverMessage, sendStreamEvent } from "./outbound.js";
 import {
@@ -220,53 +219,28 @@ export async function handleInbound(
       );
 
       runtime.log?.info?.(`chatzoo inbound: starting dispatch to agent`);
-      await Promise.race([
-        dispatchInboundReplyWithBase({
-          cfg: cfg.openclawConfig as any,
-          channel: "chatzoo",
-          accountId: route.accountId,
+
+      // Record the inbound session
+      try {
+        await recordInboundSession({
           route: {
             agentId: route.agentId,
             sessionKey: route.sessionKey,
           },
-          storePath: resolveStorePath(
-            (cfg.openclawConfig as { session?: { store?: string } } | undefined)
-              ?.session?.store,
-          ),
           ctxPayload: ctxPayload as any,
-          core: {
-            channel: {
-              session: { recordInboundSession },
-              reply: {
-                dispatchReplyWithBufferedBlockDispatcher:
-                  dispatchReplyWithBufferedBlockDispatcher as any,
-              },
-            },
-          },
-          // onPartialReply handles per-token streaming above. deliver only
-          // needs to accumulate the final block text for the done event.
-          deliver: async (payload) => {
-            const text =
-              typeof payload?.text === "string"
-                ? payload.text
-                : typeof (payload as { body?: unknown })?.body === "string"
-                  ? ((payload as { body?: string }).body ?? "")
-                  : "";
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
+      }
 
-            runtime.log?.info?.(
-              `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars)`,
-            );
-          },
-          onRecordError: (err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
-          },
-          onDispatchError: (err, info) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            runtime.log?.error?.(
-              `chatzoo inbound dispatch error [${info.kind}]: ${msg}`,
-            );
-            throw new Error(`dispatch error [${info.kind}]: ${msg}`);
+      // Dispatch to the agent using the buffered block dispatcher
+      await Promise.race([
+        (dispatchReplyWithBufferedBlockDispatcher as any)({
+          ctxPayload: ctxPayload as any,
+          route: {
+            agentId: route.agentId,
+            sessionKey: route.sessionKey,
           },
           replyOptions: {
             // Disable block buffering so per-token onPartialReply fires immediately.
