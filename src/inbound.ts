@@ -402,6 +402,7 @@ export async function handleInbound(
       );
 
       if (assistantMessage.trim().length > 0) {
+        let doneEventSent = false;
         try {
           runtime.log?.info?.(`chatzoo inbound: sending done event`);
           await sendStreamEvent({
@@ -419,20 +420,26 @@ export async function handleInbound(
             },
           });
           runtime.log?.info?.(`chatzoo inbound: done event sent`);
+          doneEventSent = true;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           runtime.log?.error?.(`chatzoo inbound: done event failed: ${msg}`);
         }
 
-        await deliverMessage({
-          gatewayUrl: cfg.gatewayUrl,
-          hookToken: cfg.hookToken,
-          deliveryTimeoutMs: cfg.deliveryTimeoutMs,
-          threadId: data.conversationId,
-          content: assistantMessage,
-          messageId,
-          ...(imageUrls.length > 0 ? { imageUrls } : {}),
-        });
+        // The gateway's done handler persists to DB via notify.
+        // Only call deliverMessage as a fallback if the done event failed,
+        // to avoid duplicate DB rows.
+        if (!doneEventSent) {
+          await deliverMessage({
+            gatewayUrl: cfg.gatewayUrl,
+            hookToken: cfg.hookToken,
+            deliveryTimeoutMs: cfg.deliveryTimeoutMs,
+            threadId: data.conversationId,
+            content: assistantMessage,
+            messageId,
+            ...(imageUrls.length > 0 ? { imageUrls } : {}),
+          });
+        }
       }
 
       writeJson(200, { ok: true });
