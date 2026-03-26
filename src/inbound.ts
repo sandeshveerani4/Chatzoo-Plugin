@@ -174,7 +174,7 @@ export async function handleInbound(
             await sendStreamEvent({
               gatewayUrl: cfg.gatewayUrl,
               hookToken: cfg.hookToken,
-              timeoutMs: 1500,
+              timeoutMs: 5_000,
               event: {
                 type: "agent.stream.delta",
                 conversationId: data.conversationId,
@@ -408,7 +408,7 @@ export async function handleInbound(
           await sendStreamEvent({
             gatewayUrl: cfg.gatewayUrl,
             hookToken: cfg.hookToken,
-            timeoutMs: 1500,
+            timeoutMs: 15_000,
             event: {
               type: "agent.stream.done",
               conversationId: data.conversationId,
@@ -439,6 +439,29 @@ export async function handleInbound(
             messageId,
             ...(imageUrls.length > 0 ? { imageUrls } : {}),
           });
+
+          // Retry done event with a longer timeout so the gateway can resolve
+          // the pending SSE stream. Without this the 120s timeout fires.
+          try {
+            await sendStreamEvent({
+              gatewayUrl: cfg.gatewayUrl,
+              hookToken: cfg.hookToken,
+              timeoutMs: 30_000,
+              event: {
+                type: "agent.stream.done",
+                conversationId: data.conversationId,
+                assistantMessage,
+                messageId,
+                ...(imageUrls.length > 0 ? { imageUrls } : {}),
+                ...(reasoning ? { reasoning } : {}),
+                ...(resolvedModel ? { model: resolvedModel } : {}),
+              },
+            });
+          } catch {
+            runtime.log?.error?.(
+              `chatzoo inbound: retry done event also failed`,
+            );
+          }
         }
       }
 
