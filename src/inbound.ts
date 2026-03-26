@@ -10,6 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
 import { runtimeStore } from "./client.js";
 import { deliverMessage, sendStreamEvent } from "./outbound.js";
 import {
@@ -220,34 +221,55 @@ export async function handleInbound(
 
       runtime.log?.info?.(`chatzoo inbound: starting dispatch to agent`);
 
-      // Record the inbound session
-      try {
-        await recordInboundSession({
+      await Promise.race([
+        dispatchInboundReplyWithBase({
+          cfg: cfg.openclawConfig as any,
+          channel: "chatzoo",
+          accountId: route.accountId,
           route: {
             agentId: route.agentId,
             sessionKey: route.sessionKey,
           },
+          storePath: resolveStorePath(
+            (cfg.openclawConfig as { session?: { store?: string } } | undefined)
+              ?.session?.store,
+          ),
           ctxPayload: ctxPayload as any,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
-      }
+          core: {
+            channel: {
+              session: { recordInboundSession },
+              reply: {
+                dispatchReplyWithBufferedBlockDispatcher:
+                  dispatchReplyWithBufferedBlockDispatcher as any,
+              },
+            },
+          },
+          deliver: async (payload) => {
+            const text =
+              typeof payload?.text === "string"
+                ? payload.text
+                : typeof (payload as { body?: unknown })?.body === "string"
+                  ? ((payload as { body?: string }).body ?? "")
+                  : "";
 
-      // Dispatch to the agent using the buffered block dispatcher
-      await Promise.race([
-        (dispatchReplyWithBufferedBlockDispatcher as any)({
-          ctxPayload: ctxPayload as any,
-          route: {
-            agentId: route.agentId,
-            sessionKey: route.sessionKey,
+            runtime.log?.info?.(
+              `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars)`,
+            );
+          },
+          onRecordError: (err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
+          },
+          onDispatchError: (err, info) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            runtime.log?.error?.(
+              `chatzoo inbound dispatch error [${info.kind}]: ${msg}`,
+            );
+            throw new Error(`dispatch error [${info.kind}]: ${msg}`);
           },
           replyOptions: {
-            // Disable block buffering so per-token onPartialReply fires immediately.
             disableBlockStreaming: true,
             onPartialReply,
-            // Reset the cursor when a new assistant message block starts (e.g.
-            // after a tool-call turn) so we don't slice from the wrong offset.
             onAssistantMessageStart: () => {
               partialSentLength = 0;
             },
