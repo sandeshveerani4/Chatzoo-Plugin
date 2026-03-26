@@ -188,6 +188,7 @@ export function buildChannel() {
           threadId: String(to),
           content: fullText,
           messageId: generatedMessageId,
+          ...(storagePaths.length > 0 ? { imageUrls: storagePaths } : {}),
         });
         return {
           channel: CHANNEL_ID,

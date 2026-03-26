@@ -16,16 +16,21 @@ import { deliverMessage, sendStreamEvent } from "./outbound.js";
 import {
   appendStreamChunk,
   appendStreamMedia,
+  appendStreamReasoning,
   beginStream,
   endStream,
   readAccumulatedStream,
   readAccumulatedMedia,
+  readAccumulatedReasoning,
+  setResolvedModel,
+  getResolvedModel,
 } from "./streamState.js";
 
 interface InboundBody {
   conversationId: string;
   message: string;
   userId: string;
+  model?: string;
 }
 
 const INBOUND_DISPATCH_TIMEOUT_MS = 90_000;
@@ -252,8 +257,38 @@ export async function handleInbound(
                   ? ((payload as { body?: string }).body ?? "")
                   : "";
 
+            // Extract media URLs from the OutboundReplyPayload.
+            // OpenClaw sends absolute filesystem paths (e.g.
+            // /home/openclaw/.openclaw/media/browser/abc.jpg).
+            const OPENCLAW_ROOT = "/home/openclaw/.openclaw/";
+            const rawPaths: string[] = [];
+            if (typeof payload?.mediaUrl === "string")
+              rawPaths.push(payload.mediaUrl);
+            if (Array.isArray(payload?.mediaUrls)) {
+              for (const u of payload.mediaUrls) {
+                if (typeof u === "string") rawPaths.push(u);
+              }
+            }
+            const storagePaths: string[] = [];
+            const seen = new Set<string>();
+            for (const p of rawPaths) {
+              if (!p || seen.has(p)) continue;
+              seen.add(p);
+              if (!p.startsWith("/") || p.includes("..")) continue;
+              const relative = p.startsWith(OPENCLAW_ROOT)
+                ? p.slice(OPENCLAW_ROOT.length)
+                : p.slice(1);
+              if (!relative) continue;
+              storagePaths.push(
+                `computer/media?path=${encodeURIComponent(relative)}`,
+              );
+            }
+            if (storagePaths.length > 0) {
+              appendStreamMedia(data.conversationId, storagePaths);
+            }
+
             runtime.log?.info?.(
-              `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars)`,
+              `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars), media=${storagePaths.length}`,
             );
           },
           onRecordError: (err) => {
@@ -267,13 +302,78 @@ export async function handleInbound(
             );
             throw new Error(`dispatch error [${info.kind}]: ${msg}`);
           },
-          replyOptions: {
-            disableBlockStreaming: true,
-            onPartialReply,
-            onAssistantMessageStart: () => {
-              partialSentLength = 0;
+          replyOptions: Object.assign(
+            {
+              disableBlockStreaming: true,
+              onPartialReply,
+              onAssistantMessageStart: () => {
+                partialSentLength = 0;
+              },
+              onReasoningStream: (payload: { text?: string }) => {
+                const text =
+                  typeof payload?.text === "string" ? payload.text : "";
+                if (!text) return;
+                appendStreamReasoning(data.conversationId, text);
+                sendQueue = sendQueue.then(async () => {
+                  try {
+                    await sendStreamEvent({
+                      gatewayUrl: cfg.gatewayUrl,
+                      hookToken: cfg.hookToken,
+                      timeoutMs: 1500,
+                      event: {
+                        type: "agent.stream.reasoning",
+                        conversationId: data.conversationId,
+                        text,
+                      },
+                    });
+                  } catch (err) {
+                    const msg =
+                      err instanceof Error ? err.message : String(err);
+                    runtime.log?.error?.(
+                      `chatzoo reasoning-stream: send failed: ${msg}`,
+                    );
+                  }
+                });
+              },
+              onToolStart: (payload: { name?: string; phase?: string }) => {
+                sendQueue = sendQueue.then(async () => {
+                  try {
+                    await sendStreamEvent({
+                      gatewayUrl: cfg.gatewayUrl,
+                      hookToken: cfg.hookToken,
+                      timeoutMs: 1500,
+                      event: {
+                        type: "agent.stream.tool-start",
+                        conversationId: data.conversationId,
+                        name: payload?.name,
+                        phase: payload?.phase,
+                      },
+                    });
+                  } catch (err) {
+                    const msg =
+                      err instanceof Error ? err.message : String(err);
+                    runtime.log?.error?.(
+                      `chatzoo tool-start: send failed: ${msg}`,
+                    );
+                  }
+                });
+              },
             },
-          },
+            {
+              // onModelSelected is not in ReplyOptionsWithoutModelSelected but
+              // the underlying getReply runtime accepts it. Use Object.assign to
+              // bypass the excess-property check.
+              onModelSelected: (ctx: { provider?: string; model?: string }) => {
+                if (ctx?.model) {
+                  const modelId = ctx.provider
+                    ? `${ctx.provider}/${ctx.model}`
+                    : ctx.model;
+                  setResolvedModel(data.conversationId, modelId);
+                  runtime.log?.info?.(`chatzoo: model selected: ${modelId}`);
+                }
+              },
+            },
+          ),
         }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
@@ -293,6 +393,8 @@ export async function handleInbound(
       // appendStreamChunk). Build the final message from the accumulator.
       const assistantMessage = readAccumulatedStream(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
+      const reasoning = readAccumulatedReasoning(data.conversationId);
+      const resolvedModel = getResolvedModel(data.conversationId);
       const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 
       runtime.log?.info?.(
@@ -312,6 +414,8 @@ export async function handleInbound(
               assistantMessage,
               messageId,
               ...(imageUrls.length > 0 ? { imageUrls } : {}),
+              ...(reasoning ? { reasoning } : {}),
+              ...(resolvedModel ? { model: resolvedModel } : {}),
             },
           });
           runtime.log?.info?.(`chatzoo inbound: done event sent`);
@@ -327,6 +431,7 @@ export async function handleInbound(
           threadId: data.conversationId,
           content: assistantMessage,
           messageId,
+          ...(imageUrls.length > 0 ? { imageUrls } : {}),
         });
       }
 

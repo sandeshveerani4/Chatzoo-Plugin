@@ -32,6 +32,7 @@ export interface DeliverOptions {
   threadId: string;
   content: string;
   messageId: string;
+  imageUrls?: string[];
 }
 
 export interface StreamEventOptions {
@@ -45,11 +46,24 @@ export interface StreamEventOptions {
         text: string;
       }
     | {
+        type: "agent.stream.reasoning";
+        conversationId: string;
+        text: string;
+      }
+    | {
+        type: "agent.stream.tool-start";
+        conversationId: string;
+        name?: string;
+        phase?: string;
+      }
+    | {
         type: "agent.stream.done";
         conversationId: string;
         assistantMessage: string;
         messageId: string;
         imageUrls?: string[];
+        reasoning?: string;
+        model?: string;
       }
     | {
         type: "agent.stream.error";
@@ -79,6 +93,9 @@ export async function deliverMessage(
     messageId: opts.messageId,
     content: opts.content,
     timestamp: new Date().toISOString(),
+    ...(opts.imageUrls && opts.imageUrls.length > 0
+      ? { imageUrls: opts.imageUrls }
+      : {}),
   };
 
   try {

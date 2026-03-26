@@ -4,6 +4,8 @@ type StreamState = {
   pendingDelta: string;
   lastDeltaFlushAt: number;
   mediaUrls: string[];
+  reasoning: string;
+  resolvedModel: string;
 };
 
 const activeStreams = new Map<string, StreamState>();
@@ -16,6 +18,8 @@ export function beginStream(threadId: string): void {
     pendingDelta: "",
     lastDeltaFlushAt: now,
     mediaUrls: [],
+    reasoning: "",
+    resolvedModel: "",
   });
 }
 
@@ -74,6 +78,25 @@ export function appendStreamMedia(threadId: string, paths: string[]): void {
 
 export function readAccumulatedMedia(threadId: string): string[] {
   return activeStreams.get(threadId)?.mediaUrls ?? [];
+}
+
+export function appendStreamReasoning(threadId: string, chunk: string): void {
+  const state = activeStreams.get(threadId);
+  if (!state) return;
+  state.reasoning += chunk;
+}
+
+export function readAccumulatedReasoning(threadId: string): string {
+  return activeStreams.get(threadId)?.reasoning ?? "";
+}
+
+export function setResolvedModel(threadId: string, model: string): void {
+  const state = activeStreams.get(threadId);
+  if (state) state.resolvedModel = model;
+}
+
+export function getResolvedModel(threadId: string): string {
+  return activeStreams.get(threadId)?.resolvedModel ?? "";
 }
 
 export function endStream(threadId: string): void {
