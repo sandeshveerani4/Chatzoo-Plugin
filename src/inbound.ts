@@ -34,7 +34,7 @@ interface InboundBody {
   model?: string;
 }
 
-const INBOUND_DISPATCH_TIMEOUT_MS = 90_000;
+const INBOUND_DISPATCH_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
 
 export async function handleInbound(
   req: IncomingMessage,
@@ -163,6 +163,7 @@ export async function handleInbound(
       );
     };
 
+    let backgroundMode = false;
     beginStream(data.conversationId);
     try {
       runtime.log?.info?.(
@@ -216,128 +217,211 @@ export async function handleInbound(
       runtime.log?.info?.(`chatzoo inbound: starting dispatch to agent`);
 
       const runDispatch = () =>
-        Promise.race([
-          dispatchInboundReplyWithBase({
-            cfg: cfg.openclawConfig as any,
-            channel: "chatzoo",
-            accountId: route.accountId,
-            route: {
-              agentId: route.agentId,
-              sessionKey: route.sessionKey,
-            },
-            storePath: resolveStorePath(
-              (
-                cfg.openclawConfig as
-                  | { session?: { store?: string } }
-                  | undefined
-              )?.session?.store,
-            ),
-            ctxPayload: ctxPayload as any,
-            core: {
-              channel: {
-                session: { recordInboundSession },
-                reply: {
-                  dispatchReplyWithBufferedBlockDispatcher:
-                    dispatchReplyWithBufferedBlockDispatcher as any,
-                },
+        dispatchInboundReplyWithBase({
+          cfg: cfg.openclawConfig as any,
+          channel: "chatzoo",
+          accountId: route.accountId,
+          route: {
+            agentId: route.agentId,
+            sessionKey: route.sessionKey,
+          },
+          storePath: resolveStorePath(
+            (
+              cfg.openclawConfig as
+                | { session?: { store?: string } }
+                | undefined
+            )?.session?.store,
+          ),
+          ctxPayload: ctxPayload as any,
+          core: {
+            channel: {
+              session: { recordInboundSession },
+              reply: {
+                dispatchReplyWithBufferedBlockDispatcher:
+                  dispatchReplyWithBufferedBlockDispatcher as any,
               },
             },
-            deliver: async (payload) => {
-              const text =
-                typeof payload?.text === "string"
-                  ? payload.text
-                  : typeof (payload as { body?: unknown })?.body === "string"
-                    ? ((payload as { body?: string }).body ?? "")
-                    : "";
+          },
+          deliver: async (payload) => {
+            const text =
+              typeof payload?.text === "string"
+                ? payload.text
+                : typeof (payload as { body?: unknown })?.body === "string"
+                  ? ((payload as { body?: string }).body ?? "")
+                  : "";
 
-              const OPENCLAW_ROOT = "/home/openclaw/.openclaw/";
-              const rawPaths: string[] = [];
-              if (typeof payload?.mediaUrl === "string")
-                rawPaths.push(payload.mediaUrl);
-              if (Array.isArray(payload?.mediaUrls)) {
-                for (const u of payload.mediaUrls) {
-                  if (typeof u === "string") rawPaths.push(u);
+            const OPENCLAW_ROOT = "/home/openclaw/.openclaw/";
+            const rawPaths: string[] = [];
+            if (typeof payload?.mediaUrl === "string")
+              rawPaths.push(payload.mediaUrl);
+            if (Array.isArray(payload?.mediaUrls)) {
+              for (const u of payload.mediaUrls) {
+                if (typeof u === "string") rawPaths.push(u);
+              }
+            }
+            const storagePaths: string[] = [];
+            const seen = new Set<string>();
+            for (const p of rawPaths) {
+              if (!p || seen.has(p)) continue;
+              seen.add(p);
+              if (!p.startsWith("/") || p.includes("..")) continue;
+              const relative = p.startsWith(OPENCLAW_ROOT)
+                ? p.slice(OPENCLAW_ROOT.length)
+                : p.slice(1);
+              if (!relative) continue;
+              storagePaths.push(
+                `computer/media?path=${encodeURIComponent(relative)}`,
+              );
+            }
+            if (storagePaths.length > 0) {
+              appendStreamMedia(data.conversationId, storagePaths);
+            }
+
+            runtime.log?.info?.(
+              `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars), media=${storagePaths.length}`,
+            );
+          },
+          onRecordError: (err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
+          },
+          onDispatchError: (err, info) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            runtime.log?.error?.(
+              `chatzoo inbound dispatch error [${info.kind}]: ${msg}`,
+            );
+            throw new Error(`dispatch error [${info.kind}]: ${msg}`);
+          },
+          replyOptions: Object.assign(
+            {
+              disableBlockStreaming: true,
+              onPartialReply,
+              onAssistantMessageStart: () => {
+                partialSentLength = 0;
+              },
+              onReasoningStream: (payload: { text?: string }) => {
+                const text =
+                  typeof payload?.text === "string" ? payload.text : "";
+                if (!text) return;
+                appendStreamReasoning(data.conversationId, text);
+                writeSse("reasoning", { text });
+              },
+              onToolStart: (payload: { name?: string; phase?: string }) => {
+                writeSse("reasoning", {
+                  text: `**Using ${payload?.name ?? "tool"}${payload?.phase ? ` (${payload.phase})` : ""}…**\n`,
+                });
+              },
+            },
+            {
+              onModelSelected: (ctx: {
+                provider?: string;
+                model?: string;
+              }) => {
+                if (ctx?.model) {
+                  setResolvedModel(data.conversationId, ctx.model);
+                  runtime.log?.info?.(
+                    `chatzoo: model selected: ${ctx.model}`,
+                  );
                 }
-              }
-              const storagePaths: string[] = [];
-              const seen = new Set<string>();
-              for (const p of rawPaths) {
-                if (!p || seen.has(p)) continue;
-                seen.add(p);
-                if (!p.startsWith("/") || p.includes("..")) continue;
-                const relative = p.startsWith(OPENCLAW_ROOT)
-                  ? p.slice(OPENCLAW_ROOT.length)
-                  : p.slice(1);
-                if (!relative) continue;
-                storagePaths.push(
-                  `computer/media?path=${encodeURIComponent(relative)}`,
-                );
-              }
-              if (storagePaths.length > 0) {
-                appendStreamMedia(data.conversationId, storagePaths);
-              }
-
-              runtime.log?.info?.(
-                `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars), media=${storagePaths.length}`,
-              );
-            },
-            onRecordError: (err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
-            },
-            onDispatchError: (err, info) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              runtime.log?.error?.(
-                `chatzoo inbound dispatch error [${info.kind}]: ${msg}`,
-              );
-              throw new Error(`dispatch error [${info.kind}]: ${msg}`);
-            },
-            replyOptions: Object.assign(
-              {
-                disableBlockStreaming: true,
-                onPartialReply,
-                onAssistantMessageStart: () => {
-                  partialSentLength = 0;
-                },
-                onReasoningStream: (payload: { text?: string }) => {
-                  const text =
-                    typeof payload?.text === "string" ? payload.text : "";
-                  if (!text) return;
-                  appendStreamReasoning(data.conversationId, text);
-                  writeSse("reasoning", { text });
-                },
-                onToolStart: (payload: { name?: string; phase?: string }) => {
-                  writeSse("reasoning", {
-                    text: `**Using ${payload?.name ?? "tool"}${payload?.phase ? ` (${payload.phase})` : ""}…**\n`,
-                  });
-                },
               },
-              {
-                onModelSelected: (ctx: {
-                  provider?: string;
-                  model?: string;
-                }) => {
-                  if (ctx?.model) {
-                    setResolvedModel(data.conversationId, ctx.model);
-                    runtime.log?.info?.(
-                      `chatzoo: model selected: ${ctx.model}`,
-                    );
-                  }
-                },
-              },
-            ),
-          }),
-          new Promise<never>((_, reject) => {
-            setTimeout(() => {
-              reject(new Error("inbound dispatch timed out"));
-            }, INBOUND_DISPATCH_TIMEOUT_MS);
-          }),
-        ]);
+            },
+          ),
+        });
 
-      await (data.model
+      // Start dispatch — no timeout here; it runs until completion regardless.
+      const dispatchPromise = data.model
         ? modelContext.run({ model: data.model }, runDispatch)
-        : runDispatch());
+        : runDispatch();
 
+      type Outcome =
+        | { status: "done" }
+        | { status: "error"; err: unknown }
+        | { status: "timeout" };
+
+      const outcome = await Promise.race<Outcome>([
+        dispatchPromise
+          .then(() => ({ status: "done" as const }))
+          .catch((err) => ({ status: "error" as const, err })),
+        new Promise<Outcome>((resolve) =>
+          setTimeout(
+            () => resolve({ status: "timeout" }),
+            INBOUND_DISPATCH_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+
+      if (outcome.status === "timeout") {
+        // Close the SSE stream to iOS so it shows something, but keep the
+        // dispatch running in the background.  When it finishes, call the
+        // gateway notify endpoint directly so the message is persisted and a
+        // push notification is sent — no duplication because no "done" event
+        // was ever forwarded through the SSE pipe.
+        runtime.log?.warn?.(
+          `chatzoo: SSE timeout for ${data.conversationId}, dispatch continues in background`,
+        );
+        writeSse("timeout", {
+          message:
+            "Response is taking longer than expected. You'll receive a push notification when it completes.",
+        });
+        if (!res.writableEnded) res.end();
+
+        // Background completion — endStream called here, NOT in finally below.
+        backgroundMode = true;
+        void dispatchPromise
+          .then(() => {
+            const assistantMessage = readAccumulatedStream(data.conversationId);
+            if (!assistantMessage) return;
+            const imageUrls = readAccumulatedMedia(data.conversationId);
+            const reasoning = readAccumulatedReasoning(data.conversationId);
+            const resolvedModel = getResolvedModel(data.conversationId);
+            const costUsd = getCostUsd(data.conversationId);
+            const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+            runtime.log?.info?.(
+              `chatzoo: background dispatch complete for ${data.conversationId}, notifying gateway`,
+            );
+            return fetch(`${cfg.gatewayUrl}/v1/computer/notify`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${cfg.hookToken}`,
+              },
+              body: JSON.stringify({
+                conversationId: data.conversationId,
+                messageId,
+                content: assistantMessage,
+                sendPushNotification: true,
+                ...(imageUrls.length > 0 ? { imageUrls } : {}),
+                ...(reasoning ? { reasoning } : {}),
+                ...(resolvedModel ? { model: resolvedModel } : {}),
+                ...(costUsd > 0 ? { costUsd } : {}),
+              }),
+            } as any).catch((err: Error) => {
+              runtime.log?.error?.(
+                `chatzoo background notify failed: ${err.message}`,
+              );
+            });
+          })
+          .catch((err: unknown) => {
+            runtime.log?.error?.(
+              `chatzoo background dispatch error: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          })
+          .finally(() => endStream(data.conversationId));
+        return;
+      }
+
+      if (outcome.status === "error") {
+        const msg =
+          outcome.err instanceof Error
+            ? outcome.err.message
+            : String(outcome.err);
+        runtime.log?.error?.(`chatzoo inbound error: ${msg}`);
+        writeSse("error", { message: msg });
+        if (!res.writableEnded) res.end();
+        return;
+      }
+
+      // Normal path: dispatch completed within the SSE window.
       const assistantMessage = readAccumulatedStream(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
       const reasoning = readAccumulatedReasoning(data.conversationId);
@@ -366,7 +450,9 @@ export async function handleInbound(
       writeSse("error", { message: msg });
       if (!res.writableEnded) res.end();
     } finally {
-      endStream(data.conversationId);
+      // In background mode the dispatch is still running; it calls endStream
+      // itself when it finishes.  Only clean up here for the normal paths.
+      if (!backgroundMode) endStream(data.conversationId);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
