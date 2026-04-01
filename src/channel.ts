@@ -4,12 +4,6 @@
  * current OpenClaw gateway runtime expectations.
  */
 import { deliverMessage } from "./outbound.js";
-import { sendStreamEvent } from "./outbound.js";
-import {
-  appendStreamChunk,
-  appendStreamMedia,
-  isStreamActive,
-} from "./streamState.js";
 
 export interface ChannelConfig {
   gatewayUrl: string;
@@ -153,31 +147,6 @@ export function buildChannel() {
           throw new Error(
             "chatzoo: gatewayUrl and hookToken are required in config",
           );
-        }
-
-        // When an inbound stream is active for this conversation, OpenClaw may
-        // call sendText multiple times with partial chunks. In that mode we
-        // forward chunks as stream deltas and defer persistence to stream end.
-        if (isStreamActive(String(to))) {
-          if (storagePaths.length > 0)
-            appendStreamMedia(String(to), storagePaths);
-          appendStreamChunk(String(to), fullText);
-          await sendStreamEvent({
-            gatewayUrl: account.gatewayUrl,
-            hookToken: account.hookToken,
-            event: {
-              type: "agent.stream.delta",
-              conversationId: String(to),
-              text: fullText,
-            },
-          });
-
-          const chunkMessageId = `chatzoo-chunk-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-          return {
-            channel: CHANNEL_ID,
-            messageId: chunkMessageId,
-            chatId: String(to),
-          };
         }
 
         const generatedMessageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
