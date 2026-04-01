@@ -184,8 +184,13 @@ export async function handleInbound(
         cfg: cfg.openclawConfig,
         channel: "chatzoo",
         accountId: "default",
-        peer: { kind: "direct", id: data.conversationId },
+        peer: { kind: "direct", id: data.userId },
       });
+
+      // Each ChatZoo conversation gets its own isolated session key so that
+      // separate conversations don't bleed memory/history into each other,
+      // while still grouping under the same OpenClaw DM thread for the user.
+      const sessionKey = `chatzoo:${data.conversationId}`;
 
       const ctxPayload = finalizeInboundContext(
         {
@@ -201,7 +206,7 @@ export async function handleInbound(
           BodyForAgent: data.message,
           MessageId: `chatzoo-inbound-${Date.now()}`,
           Timestamp: Date.now(),
-          SessionKey: route.sessionKey,
+          SessionKey: sessionKey,
           OriginatingChannel: "chatzoo",
           OriginatingTo: data.conversationId,
         },
@@ -223,7 +228,7 @@ export async function handleInbound(
             accountId: route.accountId,
             route: {
               agentId: route.agentId,
-              sessionKey: route.sessionKey,
+              sessionKey,
             },
             storePath: resolveStorePath(
               (
