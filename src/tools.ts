@@ -30,18 +30,40 @@ async function cronRpc(
   method: string,
   params?: unknown,
 ): Promise<unknown> {
-  const client = new GatewayClient({
-    url: opts.url,
-    ...(opts.token ? { token: opts.token } : {}),
-    mode: "backend" as any,
-    clientName: "gateway-client" as any,
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      client.stop();
+      reject(new Error("gateway connection timed out"));
+    }, 15_000);
+
+    const client = new GatewayClient({
+      url: opts.url,
+      ...(opts.token ? { token: opts.token } : {}),
+      mode: "backend" as any,
+      clientName: "gateway-client" as any,
+      onHelloOk: () => {
+        client
+          .request(method, params, { timeoutMs: 10_000 })
+          .then((result) => {
+            clearTimeout(deadline);
+            resolve(result);
+          })
+          .catch((err) => {
+            clearTimeout(deadline);
+            reject(err);
+          })
+          .finally(() => {
+            client.stop();
+          });
+      },
+      onConnectError: (err: Error) => {
+        clearTimeout(deadline);
+        client.stop();
+        reject(err);
+      },
+    });
+    client.start();
   });
-  client.start();
-  try {
-    return await client.request(method, params, { timeoutMs: 15_000 });
-  } finally {
-    await client.stopAndWait({ timeoutMs: 5_000 }).catch(() => {});
-  }
 }
 
 function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
