@@ -184,12 +184,11 @@ export async function handleInbound(
         cfg: cfg.openclawConfig,
         channel: "chatzoo",
         accountId: "default",
-        peer: { kind: "direct", id: data.userId },
+        peer: { kind: "direct", id: data.conversationId },
       });
 
       // Each ChatZoo conversation gets its own isolated session key so that
-      // separate conversations don't bleed memory/history into each other,
-      // while still grouping under the same OpenClaw DM thread for the user.
+      // separate conversations don't bleed memory/history into each other.
       const sessionKey = `chatzoo:${data.conversationId}`;
 
       const ctxPayload = finalizeInboundContext(
