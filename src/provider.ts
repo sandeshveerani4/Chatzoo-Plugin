@@ -11,6 +11,7 @@ import {
   getOpenRouterModelCapabilities,
   loadOpenRouterModelCapabilities,
 } from "openclaw/plugin-sdk/provider-stream";
+import { modelContext } from "./modelContext.js";
 
 const PROVIDER_ID = "chatzoo";
 
@@ -25,13 +26,17 @@ interface ChatZooProviderConfig {
 
 /**
  * Resolve the real OpenRouter model ID for a given chatzoo model ID.
- * "chatzoo-default" maps to whatever the gateway's COMPUTER_DEFAULT_MODEL is.
+ * "chatzoo-default" maps to whatever the gateway's COMPUTER_DEFAULT_MODEL is,
+ * unless a per-request model override is present in AsyncLocalStorage.
  */
 function resolveUpstreamModelId(
   modelId: string,
   computerDefaultModel: string,
 ): string {
-  return modelId === "chatzoo-default" ? computerDefaultModel : modelId;
+  if (modelId === "chatzoo-default") {
+    return modelContext.getStore()?.model ?? computerDefaultModel;
+  }
+  return modelId;
 }
 
 export function registerChatzooProvider(
