@@ -187,10 +187,6 @@ export async function handleInbound(
         peer: { kind: "direct", id: data.conversationId },
       });
 
-      // Each ChatZoo conversation gets its own isolated session key so that
-      // separate conversations don't bleed memory/history into each other.
-      const sessionKey = `chatzoo:${data.conversationId}`;
-
       const ctxPayload = finalizeInboundContext(
         {
           Channel: "chatzoo",
@@ -205,7 +201,7 @@ export async function handleInbound(
           BodyForAgent: data.message,
           MessageId: `chatzoo-inbound-${Date.now()}`,
           Timestamp: Date.now(),
-          SessionKey: sessionKey,
+          SessionKey: route.sessionKey,
           OriginatingChannel: "chatzoo",
           OriginatingTo: data.conversationId,
         },
@@ -227,7 +223,7 @@ export async function handleInbound(
             accountId: route.accountId,
             route: {
               agentId: route.agentId,
-              sessionKey,
+              sessionKey: route.sessionKey,
             },
             storePath: resolveStorePath(
               (
