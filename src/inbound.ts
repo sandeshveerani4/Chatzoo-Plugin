@@ -12,7 +12,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
 import { runtimeStore } from "./client.js";
-import { deliverMessage, sendStreamEvent } from "./outbound.js";
 import {
   appendStreamChunk,
   appendStreamMedia,
@@ -145,52 +144,40 @@ export async function handleInbound(
       return;
     }
 
+    // ── Start SSE response ───────────────────────────────────────────────────
+    // Set headers and flush immediately so the gateway's fetch() resolves and
+    // the iOS client sees the stream is open before we even start the LLM.
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    if (typeof (res as any).flushHeaders === "function") {
+      (res as any).flushHeaders();
+    }
+
+    const writeSse = (eventType: string, payload: unknown): void => {
+      if (res.writableEnded) return;
+      res.write(
+        `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`,
+      );
+    };
+
     beginStream(data.conversationId);
     try {
       runtime.log?.info?.(
         `chatzoo inbound: webhook received for conversation ${data.conversationId}, message="${data.message.slice(0, 80)}"`,
       );
 
-      // Per-token streaming callback: fires for every LLM chunk before blocks are
-      // assembled. payload.text is the CUMULATIVE text so far (like a Telegram
-      // draft that grows with each token), NOT just the new characters. We track
-      // how much we have already forwarded and only send the new tail as a delta.
-      //
-      // OpenClaw calls onPartialReply WITHOUT await (fire-and-forget), so multiple
-      // invocations can be in-flight concurrently. To prevent out-of-order HTTP
-      // delivery we serialize sends via a Promise chain queue: each send only
-      // starts after the previous one completes, preserving call order.
+      // Per-token streaming: write delta events directly to the HTTP response.
       let partialSentLength = 0;
-      let sendQueue: Promise<void> = Promise.resolve();
       const onPartialReply = (payload: { text?: string }): void => {
         const fullText = typeof payload?.text === "string" ? payload.text : "";
         const delta = fullText.slice(partialSentLength);
         if (!delta) return;
         partialSentLength = fullText.length;
         appendStreamChunk(data.conversationId, delta);
-        // Capture delta in closure before enqueuing — partialSentLength may
-        // advance before the queued microtask runs.
-        const capturedDelta = delta;
-        sendQueue = sendQueue.then(async () => {
-          try {
-            await sendStreamEvent({
-              gatewayUrl: cfg.gatewayUrl,
-              hookToken: cfg.hookToken,
-              timeoutMs: 5_000,
-              event: {
-                type: "agent.stream.delta",
-                conversationId: data.conversationId,
-                text: capturedDelta,
-              },
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            runtime.log?.error?.(
-              `chatzoo partial-reply: delta send failed: ${msg}`,
-            );
-            // Non-blocking — agent run must not fail because of a delivery error.
-          }
-        });
+        writeSse("delta", { text: delta });
       };
 
       const route = resolveAgentRoute({
@@ -263,9 +250,6 @@ export async function handleInbound(
                     ? ((payload as { body?: string }).body ?? "")
                     : "";
 
-              // Extract media URLs from the OutboundReplyPayload.
-              // OpenClaw sends absolute filesystem paths (e.g.
-              // /home/openclaw/.openclaw/media/browser/abc.jpg).
               const OPENCLAW_ROOT = "/home/openclaw/.openclaw/";
               const rawPaths: string[] = [];
               if (typeof payload?.mediaUrl === "string")
@@ -320,63 +304,20 @@ export async function handleInbound(
                     typeof payload?.text === "string" ? payload.text : "";
                   if (!text) return;
                   appendStreamReasoning(data.conversationId, text);
-                  sendQueue = sendQueue.then(async () => {
-                    try {
-                      await sendStreamEvent({
-                        gatewayUrl: cfg.gatewayUrl,
-                        hookToken: cfg.hookToken,
-                        timeoutMs: 1500,
-                        event: {
-                          type: "agent.stream.reasoning",
-                          conversationId: data.conversationId,
-                          text,
-                        },
-                      });
-                    } catch (err) {
-                      const msg =
-                        err instanceof Error ? err.message : String(err);
-                      runtime.log?.error?.(
-                        `chatzoo reasoning-stream: send failed: ${msg}`,
-                      );
-                    }
-                  });
+                  writeSse("reasoning", { text });
                 },
                 onToolStart: (payload: { name?: string; phase?: string }) => {
-                  sendQueue = sendQueue.then(async () => {
-                    try {
-                      await sendStreamEvent({
-                        gatewayUrl: cfg.gatewayUrl,
-                        hookToken: cfg.hookToken,
-                        timeoutMs: 1500,
-                        event: {
-                          type: "agent.stream.tool-start",
-                          conversationId: data.conversationId,
-                          name: payload?.name,
-                          phase: payload?.phase,
-                        },
-                      });
-                    } catch (err) {
-                      const msg =
-                        err instanceof Error ? err.message : String(err);
-                      runtime.log?.error?.(
-                        `chatzoo tool-start: send failed: ${msg}`,
-                      );
-                    }
+                  writeSse("reasoning", {
+                    text: `**Using ${payload?.name ?? "tool"}${payload?.phase ? ` (${payload.phase})` : ""}…**\n`,
                   });
                 },
               },
               {
-                // onModelSelected is not in ReplyOptionsWithoutModelSelected but
-                // the underlying getReply runtime accepts it. Use Object.assign to
-                // bypass the excess-property check.
                 onModelSelected: (ctx: {
                   provider?: string;
                   model?: string;
                 }) => {
                   if (ctx?.model) {
-                    // ctx.model already includes the provider prefix from
-                    // OpenRouter (e.g. "openai/gpt-5.4"), so use it directly
-                    // instead of prepending ctx.provider which would double-prefix.
                     setResolvedModel(data.conversationId, ctx.model);
                     runtime.log?.info?.(
                       `chatzoo: model selected: ${ctx.model}`,
@@ -397,15 +338,6 @@ export async function handleInbound(
         ? modelContext.run({ model: data.model }, runDispatch)
         : runDispatch());
 
-      // Drain the delta send queue before signalling done. dispatchInboundReplyWithBase
-      // resolves as soon as the LLM finishes generating, but onPartialReply fires
-      // fire-and-forget so sendQueue may still have pending HTTP sends. If we POST
-      // the done event before those complete, the gateway closes the SSE stream and
-      // the iOS app stops reading — dropping the last N tokens entirely.
-      await sendQueue;
-
-      // All tokens were already streamed via onPartialReply (which also called
-      // appendStreamChunk). Build the final message from the accumulator.
       const assistantMessage = readAccumulatedStream(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
       const reasoning = readAccumulatedReasoning(data.conversationId);
@@ -417,90 +349,22 @@ export async function handleInbound(
         `chatzoo inbound: complete, accumulated message="${assistantMessage.slice(0, 80)}" (${assistantMessage.length} chars)`,
       );
 
-      if (assistantMessage.trim().length > 0) {
-        let doneEventSent = false;
-        try {
-          runtime.log?.info?.(`chatzoo inbound: sending done event`);
-          await sendStreamEvent({
-            gatewayUrl: cfg.gatewayUrl,
-            hookToken: cfg.hookToken,
-            timeoutMs: 15_000,
-            event: {
-              type: "agent.stream.done",
-              conversationId: data.conversationId,
-              assistantMessage,
-              messageId,
-              ...(imageUrls.length > 0 ? { imageUrls } : {}),
-              ...(reasoning ? { reasoning } : {}),
-              ...(resolvedModel ? { model: resolvedModel } : {}),
-              ...(costUsd > 0 ? { costUsd } : {}),
-            },
-          });
-          runtime.log?.info?.(`chatzoo inbound: done event sent`);
-          doneEventSent = true;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          runtime.log?.error?.(`chatzoo inbound: done event failed: ${msg}`);
-        }
+      writeSse("done", {
+        conversationId: data.conversationId,
+        messageId,
+        assistantMessage,
+        ...(imageUrls.length > 0 ? { imageUrls } : {}),
+        ...(reasoning ? { reasoning } : {}),
+        ...(resolvedModel ? { model: resolvedModel } : {}),
+        ...(costUsd > 0 ? { costUsd } : {}),
+      });
 
-        // The gateway's done handler persists to DB via notify.
-        // Only call deliverMessage as a fallback if the done event failed,
-        // to avoid duplicate DB rows.
-        if (!doneEventSent) {
-          await deliverMessage({
-            gatewayUrl: cfg.gatewayUrl,
-            hookToken: cfg.hookToken,
-            deliveryTimeoutMs: cfg.deliveryTimeoutMs,
-            threadId: data.conversationId,
-            content: assistantMessage,
-            messageId,
-            ...(imageUrls.length > 0 ? { imageUrls } : {}),
-          });
-
-          // Retry done event with a longer timeout so the gateway can resolve
-          // the pending SSE stream. Without this the 120s timeout fires.
-          try {
-            await sendStreamEvent({
-              gatewayUrl: cfg.gatewayUrl,
-              hookToken: cfg.hookToken,
-              timeoutMs: 30_000,
-              event: {
-                type: "agent.stream.done",
-                conversationId: data.conversationId,
-                assistantMessage,
-                messageId,
-                ...(imageUrls.length > 0 ? { imageUrls } : {}),
-                ...(reasoning ? { reasoning } : {}),
-                ...(resolvedModel ? { model: resolvedModel } : {}),
-                ...(costUsd > 0 ? { costUsd } : {}),
-              },
-            });
-          } catch {
-            runtime.log?.error?.(
-              `chatzoo inbound: retry done event also failed`,
-            );
-          }
-        }
-      }
-
-      writeJson(200, { ok: true });
+      if (!res.writableEnded) res.end();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      try {
-        await sendStreamEvent({
-          gatewayUrl: cfg.gatewayUrl,
-          hookToken: cfg.hookToken,
-          timeoutMs: 5000,
-          event: {
-            type: "agent.stream.error",
-            conversationId: data.conversationId,
-            message: msg,
-          },
-        });
-      } catch {
-        // Best effort only.
-      }
-      writeJson(500, { error: msg });
+      runtime.log?.error?.(`chatzoo inbound error: ${msg}`);
+      writeSse("error", { message: msg });
+      if (!res.writableEnded) res.end();
     } finally {
       endStream(data.conversationId);
     }
