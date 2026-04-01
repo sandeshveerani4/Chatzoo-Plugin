@@ -3,11 +3,19 @@
   "name": "ChatZoo",
   "description": "Real-time bridge between OpenClaw and the ChatZoo iOS app backend. Replaces RPC-based communication with an event-driven channel plugin.",
   "version": "1.0.0",
-  "channels": ["chatzoo"],
+  "channels": [
+    "chatzoo"
+  ],
+  "providers": [
+    "chatzoo"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["gatewayUrl", "hookToken"],
+    "required": [
+      "gatewayUrl",
+      "hookToken"
+    ],
     "properties": {
       "gatewayUrl": {
         "type": "string",
@@ -21,6 +29,18 @@
         "type": "number",
         "default": 3000,
         "description": "Milliseconds to wait for in-app delivery before falling back to push notification"
+      },
+      "computerDefaultModel": {
+        "type": "string",
+        "description": "The real OpenRouter model ID behind chatzoo-default (e.g. openai/gpt-5.4)"
+      },
+      "providerBaseUrl": {
+        "type": "string",
+        "description": "Base URL for the gateway LLM proxy (e.g. https://…/v1/computer/llm)"
+      },
+      "providerApiKey": {
+        "type": "string",
+        "description": "Per-user API key the gateway proxy expects"
       }
     }
   },

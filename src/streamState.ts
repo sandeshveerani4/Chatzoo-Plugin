@@ -6,6 +6,7 @@ type StreamState = {
   mediaUrls: string[];
   reasoning: string;
   resolvedModel: string;
+  costUsd: number;
 };
 
 const activeStreams = new Map<string, StreamState>();
@@ -20,6 +21,7 @@ export function beginStream(threadId: string): void {
     mediaUrls: [],
     reasoning: "",
     resolvedModel: "",
+    costUsd: 0,
   });
 }
 
@@ -97,6 +99,15 @@ export function setResolvedModel(threadId: string, model: string): void {
 
 export function getResolvedModel(threadId: string): string {
   return activeStreams.get(threadId)?.resolvedModel ?? "";
+}
+
+export function addCostUsd(threadId: string, cost: number): void {
+  const state = activeStreams.get(threadId);
+  if (state) state.costUsd += cost;
+}
+
+export function getCostUsd(threadId: string): number {
+  return activeStreams.get(threadId)?.costUsd ?? 0;
 }
 
 export function endStream(threadId: string): void {

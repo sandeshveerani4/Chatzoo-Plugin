@@ -24,6 +24,7 @@ import {
   readAccumulatedReasoning,
   setResolvedModel,
   getResolvedModel,
+  getCostUsd,
 } from "./streamState.js";
 
 interface InboundBody {
@@ -365,11 +366,11 @@ export async function handleInbound(
               // bypass the excess-property check.
               onModelSelected: (ctx: { provider?: string; model?: string }) => {
                 if (ctx?.model) {
-                  const modelId = ctx.provider
-                    ? `${ctx.provider}/${ctx.model}`
-                    : ctx.model;
-                  setResolvedModel(data.conversationId, modelId);
-                  runtime.log?.info?.(`chatzoo: model selected: ${modelId}`);
+                  // ctx.model already includes the provider prefix from
+                  // OpenRouter (e.g. "openai/gpt-5.4"), so use it directly
+                  // instead of prepending ctx.provider which would double-prefix.
+                  setResolvedModel(data.conversationId, ctx.model);
+                  runtime.log?.info?.(`chatzoo: model selected: ${ctx.model}`);
                 }
               },
             },
@@ -395,6 +396,7 @@ export async function handleInbound(
       const imageUrls = readAccumulatedMedia(data.conversationId);
       const reasoning = readAccumulatedReasoning(data.conversationId);
       const resolvedModel = getResolvedModel(data.conversationId);
+      const costUsd = getCostUsd(data.conversationId);
       const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 
       runtime.log?.info?.(
@@ -417,6 +419,7 @@ export async function handleInbound(
               ...(imageUrls.length > 0 ? { imageUrls } : {}),
               ...(reasoning ? { reasoning } : {}),
               ...(resolvedModel ? { model: resolvedModel } : {}),
+              ...(costUsd > 0 ? { costUsd } : {}),
             },
           });
           runtime.log?.info?.(`chatzoo inbound: done event sent`);
@@ -455,6 +458,7 @@ export async function handleInbound(
                 ...(imageUrls.length > 0 ? { imageUrls } : {}),
                 ...(reasoning ? { reasoning } : {}),
                 ...(resolvedModel ? { model: resolvedModel } : {}),
+                ...(costUsd > 0 ? { costUsd } : {}),
               },
             });
           } catch {

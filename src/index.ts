@@ -14,11 +14,15 @@ import { runtimeStore } from "./client.js";
 import { registerEventRoutes } from "./events.js";
 import { handleInbound } from "./inbound.js";
 import { registerChatzooTools } from "./tools.js";
+import { registerChatzooProvider } from "./provider.js";
 
 interface PluginConfig {
   gatewayUrl: string;
   hookToken: string;
   deliveryTimeoutMs: number;
+  computerDefaultModel: string;
+  providerBaseUrl: string;
+  providerApiKey: string;
   openclawConfig?: unknown;
 }
 
@@ -42,6 +46,21 @@ function resolvePluginConfig(api: OpenClawPluginApi): PluginConfig {
       Number(
         pluginCfg.deliveryTimeoutMs ?? channelCfg.deliveryTimeoutMs ?? 3000,
       ) || 3000,
+    computerDefaultModel: (
+      pluginCfg.computerDefaultModel ??
+      channelCfg.computerDefaultModel ??
+      "openai/gpt-5.4"
+    ).toString(),
+    providerBaseUrl: (
+      pluginCfg.providerBaseUrl ??
+      channelCfg.providerBaseUrl ??
+      ""
+    ).toString(),
+    providerApiKey: (
+      pluginCfg.providerApiKey ??
+      channelCfg.providerApiKey ??
+      ""
+    ).toString(),
     openclawConfig: api.config,
   };
 }
@@ -79,6 +98,14 @@ export default {
 
     // Agent-facing helpers so OpenClaw understands ChatZoo routing/reminder semantics
     registerChatzooTools(api);
+
+    // Register ChatZoo as a model provider so OpenClaw resolves real cost
+    // rates from OpenRouter's catalog — works for any upstream model.
+    registerChatzooProvider(api, {
+      baseUrl: cfg.providerBaseUrl || `${cfg.gatewayUrl}/v1/computer/llm`,
+      apiKey: cfg.providerApiKey,
+      computerDefaultModel: cfg.computerDefaultModel,
+    });
 
     api.logger.info("ChatZoo channel plugin registered");
   },
