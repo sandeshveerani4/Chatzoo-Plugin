@@ -170,7 +170,7 @@ function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
           : { kind: "interval", everyMs: p.everyMs },
         payload: { kind: "agentTurn", message: p.content.trim() },
         wakeMode: "now",
-        sessionTarget: "main",
+        sessionTarget: "isolated",
         deleteAfterRun: p.deleteAfterRun ?? false,
         ...(sessionKey ? { sessionKey } : {}),
       };
