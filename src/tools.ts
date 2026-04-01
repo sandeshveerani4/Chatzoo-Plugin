@@ -92,12 +92,12 @@ function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
         everyMs: {
           type: "number",
           description:
-            "Fire after this many milliseconds. Use with deleteAfterRun=true for one-shot reminders.",
+            "Delay in milliseconds before firing. Defaults to one-shot (fires once). Use deleteAfterRun=false to make it recurring.",
         },
         deleteAfterRun: {
           type: "boolean",
           description:
-            "Delete the job after it fires once. Default false. Set true for one-shot 'remind me in X' requests.",
+            "Whether to delete the job after it fires. Defaults to true for everyMs (one-shot), false for cronExpr (recurring). Override explicitly if needed.",
         },
         jobId: {
           type: "string",
@@ -162,16 +162,36 @@ function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
         ? `chatzoo:${p.conversationId.trim()}`
         : undefined;
 
+      // For one-shot "remind me in X" use kind:"at" (fires once at a fixed
+      // timestamp). For recurring schedules use kind:"cron".
+      const oneShot = p.deleteAfterRun ?? !p.cronExpr;
+      let schedule: Record<string, unknown>;
+      if (p.cronExpr) {
+        schedule = { kind: "cron", expr: p.cronExpr };
+      } else {
+        // everyMs — treat as offset from now
+        if (oneShot) {
+          schedule = {
+            kind: "at",
+            at: new Date(Date.now() + (p.everyMs as number)).toISOString(),
+          };
+        } else {
+          schedule = { kind: "interval", everyMs: p.everyMs };
+        }
+      }
+
+      // Frame the message as a reminder so the cron agent notifies the user
+      // instead of trying to perform the activity.
+      const reminderMessage = `Please send the user a short reminder message that it is time to: ${p.content.trim()}. Just notify them — do not attempt to perform the activity yourself.`;
+
       const job: Record<string, unknown> = {
         name: p.name ?? "ChatZoo reminder",
         enabled: true,
-        schedule: p.cronExpr
-          ? { kind: "cron", expr: p.cronExpr }
-          : { kind: "interval", everyMs: p.everyMs },
-        payload: { kind: "agentTurn", message: p.content.trim() },
+        schedule,
+        payload: { kind: "agentTurn", message: reminderMessage },
         wakeMode: "now",
         sessionTarget: "isolated",
-        deleteAfterRun: p.deleteAfterRun ?? false,
+        deleteAfterRun: oneShot,
         ...(sessionKey ? { sessionKey } : {}),
       };
 
