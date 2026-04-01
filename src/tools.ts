@@ -1,14 +1,18 @@
 import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { GatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
 
 type RemindParams = {
   action?: "add" | "list" | "remove";
   content?: string;
   cronExpr?: string;
   everyMs?: number;
+  deleteAfterRun?: boolean;
   jobId?: string;
   name?: string;
   conversationId?: string;
 };
+
+type GatewayOpts = { url: string; token?: string };
 
 function jsonText(value: unknown) {
   return {
@@ -21,12 +25,31 @@ function jsonText(value: unknown) {
   };
 }
 
-function buildRemindTool(): AnyAgentTool {
+async function cronRpc(
+  opts: GatewayOpts,
+  method: string,
+  params?: unknown,
+): Promise<unknown> {
+  const client = new GatewayClient({
+    url: opts.url,
+    ...(opts.token ? { token: opts.token } : {}),
+    mode: "backend" as any,
+    clientName: "gateway-client" as any,
+  });
+  client.start();
+  try {
+    return await client.request(method, params, { timeoutMs: 15_000 });
+  } finally {
+    await client.stopAndWait({ timeoutMs: 5_000 }).catch(() => {});
+  }
+}
+
+function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
   return {
     name: "chatzoo_remind",
     label: "ChatZoo Remind",
     description:
-      "Create, list, or remove ChatZoo reminders. Returns cron tool params and ChatZoo session mapping guidance.",
+      "Create, list, or remove ChatZoo reminders. Directly schedules cron jobs on the OpenClaw gateway.",
     parameters: {
       type: "object",
       properties: {
@@ -41,11 +64,18 @@ function buildRemindTool(): AnyAgentTool {
         },
         cronExpr: {
           type: "string",
-          description: "Cron expression for scheduled reminders.",
+          description:
+            "Cron expression for recurring reminders (e.g. '0 9 * * *' for 9am daily).",
         },
         everyMs: {
           type: "number",
-          description: "Interval schedule in milliseconds.",
+          description:
+            "Fire after this many milliseconds. Use with deleteAfterRun=true for one-shot reminders.",
+        },
+        deleteAfterRun: {
+          type: "boolean",
+          description:
+            "Delete the job after it fires once. Default false. Set true for one-shot 'remind me in X' requests.",
         },
         jobId: {
           type: "string",
@@ -58,7 +88,7 @@ function buildRemindTool(): AnyAgentTool {
         conversationId: {
           type: "string",
           description:
-            "Optional ChatZoo conversation id. When present, maps to sessionKey=chatzoo:<conversationId> for thread sync.",
+            "ChatZoo conversation id. When present, the reminder reply is sent back in this thread.",
         },
       },
       required: ["action"],
@@ -72,24 +102,31 @@ function buildRemindTool(): AnyAgentTool {
       }
 
       if (action === "list") {
-        return jsonText({
-          _instruction:
-            "Use the cron tool next with action=list to fetch reminders.",
-          cronParams: { action: "list" },
-        });
+        try {
+          const jobs = await cronRpc(gateway, "cron.list", {});
+          return jsonText({ jobs });
+        } catch (err) {
+          return jsonText({
+            error: `Failed to list reminders: ${String(err)}`,
+          });
+        }
       }
 
       if (action === "remove") {
         if (!p.jobId) {
           return jsonText({ error: "jobId is required for action=remove" });
         }
-        return jsonText({
-          _instruction:
-            "Use the cron tool next with action=remove to delete this reminder.",
-          cronParams: { action: "remove", jobId: p.jobId },
-        });
+        try {
+          await cronRpc(gateway, "cron.remove", { id: p.jobId });
+          return jsonText({ removed: true, jobId: p.jobId });
+        } catch (err) {
+          return jsonText({
+            error: `Failed to remove reminder: ${String(err)}`,
+          });
+        }
       }
 
+      // action === "add"
       if (!p.content || !p.content.trim()) {
         return jsonText({ error: "content is required for action=add" });
       }
@@ -103,20 +140,27 @@ function buildRemindTool(): AnyAgentTool {
         ? `chatzoo:${p.conversationId.trim()}`
         : undefined;
 
-      return jsonText({
-        _instruction:
-          "Use the cron tool next with these params. Include sessionKey to keep reminder replies in the same ChatZoo thread.",
-        cronParams: {
-          action: "add",
-          name: p.name ?? "ChatZoo reminder",
-          schedule: p.cronExpr
-            ? { kind: "cron", expr: p.cronExpr }
-            : { kind: "interval", everyMs: p.everyMs },
-          payload: { kind: "agentTurn", message: p.content.trim() },
-          wakeMode: "now",
-          ...(sessionKey ? { sessionKey } : {}),
-        },
-      });
+      const job: Record<string, unknown> = {
+        name: p.name ?? "ChatZoo reminder",
+        enabled: true,
+        schedule: p.cronExpr
+          ? { kind: "cron", expr: p.cronExpr }
+          : { kind: "interval", everyMs: p.everyMs },
+        payload: { kind: "agentTurn", message: p.content.trim() },
+        wakeMode: "now",
+        sessionTarget: "main",
+        deleteAfterRun: p.deleteAfterRun ?? false,
+        ...(sessionKey ? { sessionKey } : {}),
+      };
+
+      try {
+        const created = await cronRpc(gateway, "cron.add", job);
+        return jsonText({ scheduled: true, job: created });
+      } catch (err) {
+        return jsonText({
+          error: `Failed to schedule reminder: ${String(err)}`,
+        });
+      }
     },
   } as AnyAgentTool;
 }
@@ -175,7 +219,7 @@ function buildChannelInfoTool(): AnyAgentTool {
         return jsonText({
           reminders: {
             recommendation:
-              "Include conversationId or sessionKey on cron events to preserve thread sync in ChatZoo.",
+              "Use chatzoo_remind with the conversationId to keep reminder replies in the same ChatZoo thread.",
             sessionKeyFormat: base.sessionKeyFormat,
           },
         });
@@ -195,7 +239,16 @@ function buildChannelInfoTool(): AnyAgentTool {
 }
 
 export function registerChatzooTools(api: OpenClawPluginApi): void {
-  api.registerTool(buildRemindTool() as any, { name: "chatzoo_remind" });
+  const config = api.config as any;
+  const token = config?.gateway?.auth?.token as string | undefined;
+  // Start with default port; update when gateway_start fires with actual port.
+  const gateway: GatewayOpts = { url: "ws://127.0.0.1:18789", token };
+
+  api.on("gateway_start", (event: any) => {
+    gateway.url = `ws://127.0.0.1:${event.port}`;
+  });
+
+  api.registerTool(buildRemindTool(gateway) as any, { name: "chatzoo_remind" });
   api.registerTool(buildChannelInfoTool() as any, {
     name: "chatzoo_channel_info",
   });
