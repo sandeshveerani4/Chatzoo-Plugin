@@ -72,8 +72,8 @@ export function registerChatzooProvider(
       );
       const capabilities = getOpenRouterModelCapabilities(upstreamId);
       return {
-        id: ctx.modelId,
-        name: capabilities?.name ?? ctx.modelId,
+        id: upstreamId,
+        name: capabilities?.name ?? upstreamId,
         api: "openai-completions" as const,
         provider: PROVIDER_ID,
         baseUrl: cfg.baseUrl,
