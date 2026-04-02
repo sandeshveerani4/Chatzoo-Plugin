@@ -43,6 +43,7 @@ export async function handleInbound(
     hookToken: string;
     gatewayUrl: string;
     deliveryTimeoutMs: number;
+    computerDefaultModel: string;
     openclawConfig?: unknown;
   },
 ): Promise<void> {
@@ -318,9 +319,16 @@ export async function handleInbound(
                 model?: string;
               }) => {
                 if (ctx?.model) {
-                  setResolvedModel(data.conversationId, ctx.model);
+                  // Virtual IDs (e.g. "openclaw", "chatzoo-default") don't
+                  // contain "/" unlike real OpenRouter model IDs.  Resolve
+                  // them to the actual upstream model so the client sees the
+                  // real model name.
+                  const resolved = ctx.model.includes("/")
+                    ? ctx.model
+                    : (modelContext.getStore()?.model ?? cfg.computerDefaultModel);
+                  setResolvedModel(data.conversationId, resolved);
                   runtime.log?.info?.(
-                    `chatzoo: model selected: ${ctx.model}`,
+                    `chatzoo: model selected: ${resolved}`,
                   );
                 }
               },
