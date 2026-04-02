@@ -120,6 +120,62 @@ export async function handleInbound(
       return;
     }
 
+    // ── Session reset commands ───────────────────────────────────────────────
+    // Intercept /new, /reset, /clear etc. before dispatching to the agent.
+    // Clears the OpenClaw session and signals the iOS app to wipe messages.
+    if (isSessionResetCommand(data.message)) {
+      const runtime = runtimeStore.get();
+      runtime?.log?.info?.(
+        `chatzoo: session reset command "${data.message}" for ${data.conversationId}`,
+      );
+
+      // Try to clear the OpenClaw session history.
+      const resolveAgentRoute = runtime?.channel?.routing?.resolveAgentRoute;
+      const resolveStorePath = runtime?.channel?.session?.resolveStorePath;
+      if (resolveAgentRoute && cfg.openclawConfig) {
+        try {
+          const route = resolveAgentRoute({
+            cfg: cfg.openclawConfig,
+            channel: "chatzoo",
+            accountId: "default",
+            peer: { kind: "direct", id: data.conversationId },
+          });
+          const storePath = resolveStorePath?.(
+            (cfg.openclawConfig as { session?: { store?: string } })?.session
+              ?.store,
+          );
+          await clearOpenClawSession(
+            runtime,
+            route.sessionKey,
+            storePath ?? "",
+          );
+        } catch (err) {
+          runtime?.log?.warn?.(
+            `chatzoo: session clear failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      // Respond with SSE done + clearMessages flag.
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      const writeSse = (eventType: string, payload: unknown): void => {
+        if (res.writableEnded) return;
+        res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
+      };
+      writeSse("done", {
+        conversationId: data.conversationId,
+        messageId: `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
+        assistantMessage: "Session cleared. Starting fresh!",
+        clearMessages: true,
+      });
+      if (!res.writableEnded) res.end();
+      return;
+    }
+
     const runtime = runtimeStore.get();
     if (!runtime) {
       writeJson(500, { error: "runtime not initialized" });
@@ -162,9 +218,7 @@ export async function handleInbound(
 
     const writeSse = (eventType: string, payload: unknown): void => {
       if (res.writableEnded) return;
-      res.write(
-        `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`,
-      );
+      res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
     };
 
     let backgroundMode = false;
@@ -184,14 +238,17 @@ export async function handleInbound(
       //     computing the incremental delta sent to the iOS client.
       //   • onReasoningStream → full accumulated FORMATTED reasoning text
       //     ("Reasoning:\n_line_\n…").  Also a snapshot — same delta approach.
-      let partialSentLength = 0;      // tracks stripped-snapshot length for delta
-      let rawPartialSentLength = 0;   // tracks raw-snapshot length for accumulation
-      let lastReasoningLength = 0;    // tracks plain-text reasoning chars already sent
+      let partialSentLength = 0; // tracks stripped-snapshot length for delta
+      let rawPartialSentLength = 0; // tracks raw-snapshot length for accumulation
+      let lastReasoningLength = 0; // tracks plain-text reasoning chars already sent
       const onPartialReply = (payload: { text?: string }): void => {
         const rawFull = typeof payload?.text === "string" ? payload.text : "";
         // Accumulate the RAW snapshot so reasoning can be extracted at done-time.
         if (rawFull.length > rawPartialSentLength) {
-          appendStreamChunk(data.conversationId, rawFull.slice(rawPartialSentLength));
+          appendStreamChunk(
+            data.conversationId,
+            rawFull.slice(rawPartialSentLength),
+          );
           rawPartialSentLength = rawFull.length;
         }
         // Strip complete thinking blocks before computing the clean delta for iOS.
@@ -252,11 +309,8 @@ export async function handleInbound(
             sessionKey: route.sessionKey,
           },
           storePath: resolveStorePath(
-            (
-              cfg.openclawConfig as
-                | { session?: { store?: string } }
-                | undefined
-            )?.session?.store,
+            (cfg.openclawConfig as { session?: { store?: string } } | undefined)
+              ?.session?.store,
           ),
           ctxPayload: ctxPayload as any,
           core: {
@@ -329,7 +383,9 @@ export async function handleInbound(
             {
               disableBlockStreaming: true,
               reasoningMode: "stream" as const,
-              ...(data.reasoningEffort ? { reasoningEffort: data.reasoningEffort } : {}),
+              ...(data.reasoningEffort
+                ? { reasoningEffort: data.reasoningEffort }
+                : {}),
               onPartialReply,
               onAssistantMessageStart: () => {
                 partialSentLength = 0;
@@ -366,19 +422,14 @@ export async function handleInbound(
               },
             },
             {
-              onModelSelected: (ctx: {
-                provider?: string;
-                model?: string;
-              }) => {
+              onModelSelected: (ctx: { provider?: string; model?: string }) => {
                 // Only record the model if the runtime reports a real upstream
                 // model ID (contains "/").  Virtual IDs like "openclaw" or
                 // "chatzoo-default" are already resolved to the real model by
                 // resolveDynamicModel, which fires inside the modelContext scope.
                 if (ctx?.model?.includes("/")) {
                   setResolvedModel(data.conversationId, ctx.model);
-                  runtime.log?.info?.(
-                    `chatzoo: model selected: ${ctx.model}`,
-                  );
+                  runtime.log?.info?.(`chatzoo: model selected: ${ctx.model}`);
                 }
               },
             },
@@ -387,7 +438,11 @@ export async function handleInbound(
 
       // Start dispatch — no timeout here; it runs until completion regardless.
       const dispatchPromise = modelContext.run(
-        { model: data.model, conversationId: data.conversationId, reasoningEffort: data.reasoningEffort },
+        {
+          model: data.model,
+          conversationId: data.conversationId,
+          reasoningEffort: data.reasoningEffort,
+        },
         runDispatch,
       );
 
@@ -444,8 +499,10 @@ export async function handleInbound(
             } else {
               const extracted = extractThinkContent(rawMessage);
               assistantMessage = extracted.content || rawMessage;
-              if (!reasoning && extracted.thinking) reasoning = extracted.thinking;
-              if (!assistantMessage && extracted.thinking) assistantMessage = extracted.thinking;
+              if (!reasoning && extracted.thinking)
+                reasoning = extracted.thinking;
+              if (!assistantMessage && extracted.thinking)
+                assistantMessage = extracted.thinking;
             }
             const resolvedModel = getResolvedModel(data.conversationId);
             const costUsd = getCostUsd(data.conversationId);
@@ -519,7 +576,8 @@ export async function handleInbound(
         const extracted = extractThinkContent(rawMessage);
         assistantMessage = extracted.content || rawMessage;
         if (!reasoning && extracted.thinking) reasoning = extracted.thinking;
-        if (!assistantMessage && extracted.thinking) assistantMessage = extracted.thinking;
+        if (!assistantMessage && extracted.thinking)
+          assistantMessage = extracted.thinking;
       }
       const resolvedModel = getResolvedModel(data.conversationId);
       const costUsd = getCostUsd(data.conversationId);
@@ -592,16 +650,89 @@ function extractHookToken(req: IncomingMessage): string {
 
 /** Strip complete thinking blocks from a text snapshot (used on onPartialReply snapshots). */
 function stripThinkTags(text: string): string {
-  return text.replace(/<(think|thinking|thought|antthinking)>([\s\S]*?)<\/\1>/gi, "");
+  return text.replace(
+    /<(think|thinking|thought|antthinking)>([\s\S]*?)<\/\1>/gi,
+    "",
+  );
 }
 
 /** Extract thinking block content and return it separately from the visible content. */
-function extractThinkContent(text: string): { content: string; thinking: string } {
+function extractThinkContent(text: string): {
+  content: string;
+  thinking: string;
+} {
   const thinkRegex = /<(think|thinking|thought|antthinking)>([\s\S]*?)<\/\1>/gi;
   const thinkParts: string[] = [];
-  const content = text.replace(thinkRegex, (_match: string, _tag: string, inner: string) => {
-    thinkParts.push(inner);
-    return "";
-  }).trim();
+  const content = text
+    .replace(thinkRegex, (_match: string, _tag: string, inner: string) => {
+      thinkParts.push(inner);
+      return "";
+    })
+    .trim();
   return { content, thinking: thinkParts.join("") };
+}
+
+// ── Session reset helpers ──────────────────────────────────────────────────
+
+const SESSION_RESET_COMMANDS = new Set([
+  "/new",
+  "/reset",
+  "/clear",
+  "/cls",
+  "/restart",
+]);
+
+function isSessionResetCommand(msg: string): boolean {
+  return SESSION_RESET_COMMANDS.has(msg.trim().toLowerCase());
+}
+
+/**
+ * Best-effort clearing of an OpenClaw session's history.
+ * Tries known runtime APIs, then falls back to deleting the session store file.
+ */
+async function clearOpenClawSession(
+  runtime: ReturnType<typeof runtimeStore.get>,
+  sessionKey: string,
+  storePath: string,
+): Promise<void> {
+  const session = (runtime as any)?.channel?.session;
+
+  // Try common SDK clear/delete APIs.
+  if (typeof session?.clearSession === "function") {
+    await session.clearSession(sessionKey);
+    runtime?.log?.info?.(
+      `chatzoo: session ${sessionKey} cleared via clearSession()`,
+    );
+    return;
+  }
+  if (typeof session?.deleteSession === "function") {
+    await session.deleteSession(sessionKey);
+    runtime?.log?.info?.(
+      `chatzoo: session ${sessionKey} cleared via deleteSession()`,
+    );
+    return;
+  }
+  if (typeof session?.clearHistory === "function") {
+    await session.clearHistory(sessionKey);
+    runtime?.log?.info?.(
+      `chatzoo: session ${sessionKey} cleared via clearHistory()`,
+    );
+    return;
+  }
+
+  // Fallback: delete the session store file on disk.
+  if (storePath) {
+    try {
+      const { unlink } = await import("node:fs/promises");
+      const filePath = `${storePath}/${sessionKey}.json`.replace(/\/+/g, "/");
+      await unlink(filePath);
+      runtime?.log?.info?.(
+        `chatzoo: session ${sessionKey} cleared via fs unlink`,
+      );
+    } catch {
+      runtime?.log?.info?.(
+        `chatzoo: no session file found for ${sessionKey} (may already be clean)`,
+      );
+    }
+  }
 }
