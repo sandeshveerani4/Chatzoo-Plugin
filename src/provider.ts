@@ -12,6 +12,7 @@ import {
   loadOpenRouterModelCapabilities,
 } from "openclaw/plugin-sdk/provider-stream";
 import { modelContext } from "./modelContext.js";
+import { setResolvedModel } from "./streamState.js";
 
 const PROVIDER_ID = "chatzoo";
 
@@ -70,6 +71,10 @@ export function registerChatzooProvider(
         ctx.modelId,
         cfg.computerDefaultModel,
       );
+      // Capture the real upstream model while we're still inside the
+      // modelContext.run() scope — onModelSelected fires outside it.
+      const conversationId = modelContext.getStore()?.conversationId;
+      if (conversationId) setResolvedModel(conversationId, upstreamId);
       const capabilities = getOpenRouterModelCapabilities(upstreamId);
       return {
         id: upstreamId,

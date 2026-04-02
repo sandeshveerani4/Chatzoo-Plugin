@@ -318,17 +318,14 @@ export async function handleInbound(
                 provider?: string;
                 model?: string;
               }) => {
-                if (ctx?.model) {
-                  // Virtual IDs (e.g. "openclaw", "chatzoo-default") don't
-                  // contain "/" unlike real OpenRouter model IDs.  Resolve
-                  // them to the actual upstream model so the client sees the
-                  // real model name.
-                  const resolved = ctx.model.includes("/")
-                    ? ctx.model
-                    : (modelContext.getStore()?.model ?? cfg.computerDefaultModel);
-                  setResolvedModel(data.conversationId, resolved);
+                // Only record the model if the runtime reports a real upstream
+                // model ID (contains "/").  Virtual IDs like "openclaw" or
+                // "chatzoo-default" are already resolved to the real model by
+                // resolveDynamicModel, which fires inside the modelContext scope.
+                if (ctx?.model?.includes("/")) {
+                  setResolvedModel(data.conversationId, ctx.model);
                   runtime.log?.info?.(
-                    `chatzoo: model selected: ${resolved}`,
+                    `chatzoo: model selected: ${ctx.model}`,
                   );
                 }
               },
@@ -337,9 +334,10 @@ export async function handleInbound(
         });
 
       // Start dispatch — no timeout here; it runs until completion regardless.
-      const dispatchPromise = data.model
-        ? modelContext.run({ model: data.model }, runDispatch)
-        : runDispatch();
+      const dispatchPromise = modelContext.run(
+        { model: data.model, conversationId: data.conversationId },
+        runDispatch,
+      );
 
       type Outcome =
         | { status: "done" }

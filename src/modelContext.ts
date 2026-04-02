@@ -8,7 +8,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 interface ModelContext {
-  model: string;
+  model?: string;
+  conversationId?: string;
 }
 
 export const modelContext = new AsyncLocalStorage<ModelContext>();
