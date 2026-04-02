@@ -32,6 +32,7 @@ interface InboundBody {
   message: string;
   userId: string;
   model?: string;
+  reasoningEffort?: string;
 }
 
 const INBOUND_DISPATCH_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
@@ -209,7 +210,7 @@ export async function handleInbound(
         },
         {
           forceBodyForAgent: true,
-          forceBodyForCommands: true,
+          forceBodyForCommands: false,
           forceChatType: true,
           forceConversationLabel: true,
         },
@@ -296,6 +297,7 @@ export async function handleInbound(
           replyOptions: Object.assign(
             {
               disableBlockStreaming: true,
+              ...(data.reasoningEffort ? { reasoningEffort: data.reasoningEffort } : {}),
               onPartialReply,
               onAssistantMessageStart: () => {
                 partialSentLength = 0;
@@ -339,7 +341,7 @@ export async function handleInbound(
 
       // Start dispatch — no timeout here; it runs until completion regardless.
       const dispatchPromise = modelContext.run(
-        { model: data.model, conversationId: data.conversationId },
+        { model: data.model, conversationId: data.conversationId, reasoningEffort: data.reasoningEffort },
         runDispatch,
       );
 
@@ -379,10 +381,16 @@ export async function handleInbound(
         backgroundMode = true;
         void dispatchPromise
           .then(() => {
-            const assistantMessage = readAccumulatedStream(data.conversationId);
-            if (!assistantMessage) return;
+            const rawMessage = readAccumulatedStream(data.conversationId);
+            if (!rawMessage) return;
             const imageUrls = readAccumulatedMedia(data.conversationId);
-            const reasoning = readAccumulatedReasoning(data.conversationId);
+            let reasoning = readAccumulatedReasoning(data.conversationId);
+            let assistantMessage = rawMessage;
+            if (!reasoning && rawMessage.includes("<think>")) {
+              const extracted = extractThinkContent(rawMessage);
+              reasoning = extracted.thinking;
+              assistantMessage = extracted.content;
+            }
             const resolvedModel = getResolvedModel(data.conversationId);
             const costUsd = getCostUsd(data.conversationId);
             const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -432,9 +440,18 @@ export async function handleInbound(
       }
 
       // Normal path: dispatch completed within the SSE window.
-      const assistantMessage = readAccumulatedStream(data.conversationId);
+      const rawMessage = readAccumulatedStream(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
-      const reasoning = readAccumulatedReasoning(data.conversationId);
+      let reasoning = readAccumulatedReasoning(data.conversationId);
+      // For models that produce <think>…</think> tags in the content stream
+      // instead of native reasoning tokens, extract the think content and
+      // strip it from the assistant message so it surfaces as reasoning.
+      let assistantMessage = rawMessage;
+      if (!reasoning && rawMessage.includes("<think>")) {
+        const extracted = extractThinkContent(rawMessage);
+        reasoning = extracted.thinking;
+        assistantMessage = extracted.content;
+      }
       const resolvedModel = getResolvedModel(data.conversationId);
       const costUsd = getCostUsd(data.conversationId);
       const messageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -502,4 +519,15 @@ function extractHookToken(req: IncomingMessage): string {
   return /^Bearer\s+/i.test(auth)
     ? auth.replace(/^Bearer\s+/i, "").trim()
     : auth;
+}
+
+/** Extract <think>…</think> blocks from content. Returns stripped content and joined thinking text. */
+function extractThinkContent(text: string): { content: string; thinking: string } {
+  const thinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+  const thinkParts: string[] = [];
+  const content = text.replace(thinkRegex, (_, inner: string) => {
+    thinkParts.push(inner);
+    return "";
+  }).trim();
+  return { content, thinking: thinkParts.join("") };
 }
