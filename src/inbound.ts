@@ -308,9 +308,13 @@ export async function handleInbound(
                 writeSse("reasoning", { text });
               },
               onToolStart: (payload: { name?: string; phase?: string }) => {
-                writeSse("reasoning", {
-                  text: `**Using ${payload?.name ?? "tool"}${payload?.phase ? ` (${payload.phase})` : ""}…**\n`,
+                const json = JSON.stringify({
+                  name: payload?.name ?? "tool",
+                  ...(payload?.phase ? { phase: payload.phase } : {}),
                 });
+                const fence = `\n\`\`\`tool-call\n${json}\n\`\`\`\n`;
+                appendStreamChunk(data.conversationId, fence);
+                writeSse("delta", { text: fence });
               },
             },
             {
