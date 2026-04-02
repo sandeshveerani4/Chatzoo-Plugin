@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
 import { runtimeStore } from "./client.js";
 import {
+  appendDeliveredText,
   appendStreamChunk,
   appendStreamMedia,
   appendStreamReasoning,
@@ -21,6 +22,7 @@ import {
   readAccumulatedStream,
   readAccumulatedMedia,
   readAccumulatedReasoning,
+  readDeliveredText,
   setResolvedModel,
   getResolvedModel,
   getCostUsd,
@@ -172,14 +174,36 @@ export async function handleInbound(
         `chatzoo inbound: webhook received for conversation ${data.conversationId}, message="${data.message.slice(0, 80)}"`,
       );
 
-      // Per-token streaming: write delta events directly to the HTTP response.
-      let partialSentLength = 0;
+      // Per-token streaming callbacks.
+      //
+      // OpenClaw delivers TWO separate snapshot streams:
+      //   • onPartialReply  → full accumulated answer text snapshot.  For some
+      //     models / reasoning modes this may include raw <think>/</think> (or
+      //     <thinking>) blocks.  We accumulate the RAW snapshot for reasoning
+      //     extraction at done-time, but strip complete thinking blocks before
+      //     computing the incremental delta sent to the iOS client.
+      //   • onReasoningStream → full accumulated FORMATTED reasoning text
+      //     ("Reasoning:\n_line_\n…").  Also a snapshot — same delta approach.
+      let partialSentLength = 0;      // tracks stripped-snapshot length for delta
+      let rawPartialSentLength = 0;   // tracks raw-snapshot length for accumulation
+      let lastReasoningSnapshot = "";
       const onPartialReply = (payload: { text?: string }): void => {
-        const fullText = typeof payload?.text === "string" ? payload.text : "";
+        const rawFull = typeof payload?.text === "string" ? payload.text : "";
+        // Accumulate the RAW snapshot so reasoning can be extracted at done-time.
+        if (rawFull.length > rawPartialSentLength) {
+          appendStreamChunk(data.conversationId, rawFull.slice(rawPartialSentLength));
+          rawPartialSentLength = rawFull.length;
+        }
+        // Strip complete thinking blocks before computing the clean delta for iOS.
+        const fullText = stripThinkTags(rawFull);
+        // If stripped length shrank, a think block just closed — reset so the
+        // clean answer text isn't skipped.
+        if (fullText.length < partialSentLength) {
+          partialSentLength = 0;
+        }
         const delta = fullText.slice(partialSentLength);
         if (!delta) return;
         partialSentLength = fullText.length;
-        appendStreamChunk(data.conversationId, delta);
         writeSse("delta", { text: delta });
       };
 
@@ -282,6 +306,13 @@ export async function handleInbound(
             runtime.log?.info?.(
               `chatzoo deliver: block text="${text.slice(0, 80)}" (${text.length} chars), media=${storagePaths.length}`,
             );
+
+            // Capture the clean reply text delivered by OpenClaw.  This is the
+            // authoritative content (thinking-blocks already stripped internally)
+            // and is preferred over the onPartialReply accumulation at done-time.
+            if (text) {
+              appendDeliveredText(data.conversationId, text);
+            }
           },
           onRecordError: (err) => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -301,13 +332,22 @@ export async function handleInbound(
               onPartialReply,
               onAssistantMessageStart: () => {
                 partialSentLength = 0;
+                rawPartialSentLength = 0;
+                lastReasoningSnapshot = "";
               },
               onReasoningStream: (payload: { text?: string }) => {
-                const text =
+                const fullReasoning =
                   typeof payload?.text === "string" ? payload.text : "";
-                if (!text) return;
-                appendStreamReasoning(data.conversationId, text);
-                writeSse("reasoning", { text });
+                if (!fullReasoning) return;
+                // onReasoningStream fires with the full accumulated reasoning
+                // snapshot on each call — compute the incremental delta.
+                const delta = fullReasoning.startsWith(lastReasoningSnapshot)
+                  ? fullReasoning.slice(lastReasoningSnapshot.length)
+                  : fullReasoning;
+                if (!delta) return;
+                lastReasoningSnapshot = fullReasoning;
+                appendStreamReasoning(data.conversationId, delta);
+                writeSse("reasoning", { text: delta });
               },
               onToolStart: (payload: { name?: string; phase?: string }) => {
                 const json = JSON.stringify({
@@ -382,14 +422,24 @@ export async function handleInbound(
         void dispatchPromise
           .then(() => {
             const rawMessage = readAccumulatedStream(data.conversationId);
-            if (!rawMessage) return;
+            const deliveredText = readDeliveredText(data.conversationId);
+            if (!rawMessage && !deliveredText) return;
             const imageUrls = readAccumulatedMedia(data.conversationId);
             let reasoning = readAccumulatedReasoning(data.conversationId);
-            let assistantMessage = rawMessage;
-            if (!reasoning && rawMessage.includes("<think>")) {
+
+            if (!reasoning && rawMessage) {
               const extracted = extractThinkContent(rawMessage);
-              reasoning = extracted.thinking;
-              assistantMessage = extracted.content;
+              if (extracted.thinking) reasoning = extracted.thinking;
+            }
+
+            let assistantMessage: string;
+            if (deliveredText) {
+              assistantMessage = deliveredText;
+            } else {
+              const extracted = extractThinkContent(rawMessage);
+              assistantMessage = extracted.content || rawMessage;
+              if (!reasoning && extracted.thinking) reasoning = extracted.thinking;
+              if (!assistantMessage && extracted.thinking) assistantMessage = extracted.thinking;
             }
             const resolvedModel = getResolvedModel(data.conversationId);
             const costUsd = getCostUsd(data.conversationId);
@@ -441,16 +491,29 @@ export async function handleInbound(
 
       // Normal path: dispatch completed within the SSE window.
       const rawMessage = readAccumulatedStream(data.conversationId);
+      const deliveredText = readDeliveredText(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
       let reasoning = readAccumulatedReasoning(data.conversationId);
-      // For models that produce <think>…</think> tags in the content stream
-      // instead of native reasoning tokens, extract the think content and
-      // strip it from the assistant message so it surfaces as reasoning.
-      let assistantMessage = rawMessage;
-      if (!reasoning && rawMessage.includes("<think>")) {
+
+      // Extract reasoning from raw accumulated content regardless of path —
+      // covers models that embed <think> blocks in onPartialReply rather than
+      // firing onReasoningStream.
+      if (!reasoning && rawMessage) {
         const extracted = extractThinkContent(rawMessage);
-        reasoning = extracted.thinking;
-        assistantMessage = extracted.content;
+        if (extracted.thinking) reasoning = extracted.thinking;
+      }
+
+      // Prefer the text captured from the `deliver` callback (OpenClaw's final,
+      // think-tag-stripped output) over the onPartialReply accumulation.
+      // Fall back to stripping rawMessage when deliver didn't fire.
+      let assistantMessage: string;
+      if (deliveredText) {
+        assistantMessage = deliveredText;
+      } else {
+        const extracted = extractThinkContent(rawMessage);
+        assistantMessage = extracted.content || rawMessage;
+        if (!reasoning && extracted.thinking) reasoning = extracted.thinking;
+        if (!assistantMessage && extracted.thinking) assistantMessage = extracted.thinking;
       }
       const resolvedModel = getResolvedModel(data.conversationId);
       const costUsd = getCostUsd(data.conversationId);
@@ -521,11 +584,16 @@ function extractHookToken(req: IncomingMessage): string {
     : auth;
 }
 
-/** Extract <think>…</think> blocks from content. Returns stripped content and joined thinking text. */
+/** Strip complete thinking blocks from a text snapshot (used on onPartialReply snapshots). */
+function stripThinkTags(text: string): string {
+  return text.replace(/<(think|thinking|thought|antthinking)>([\s\S]*?)<\/\1>/gi, "");
+}
+
+/** Extract thinking block content and return it separately from the visible content. */
 function extractThinkContent(text: string): { content: string; thinking: string } {
-  const thinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+  const thinkRegex = /<(think|thinking|thought|antthinking)>([\s\S]*?)<\/\1>/gi;
   const thinkParts: string[] = [];
-  const content = text.replace(thinkRegex, (_, inner: string) => {
+  const content = text.replace(thinkRegex, (_match: string, _tag: string, inner: string) => {
     thinkParts.push(inner);
     return "";
   }).trim();

@@ -3,6 +3,7 @@ type StreamState = {
   startedAt: number;
   mediaUrls: string[];
   reasoning: string;
+  deliveredText: string;
   resolvedModel: string;
   costUsd: number;
 };
@@ -15,6 +16,7 @@ export function beginStream(threadId: string): void {
     startedAt: Date.now(),
     mediaUrls: [],
     reasoning: "",
+    deliveredText: "",
     resolvedModel: "",
     costUsd: 0,
   });
@@ -55,6 +57,16 @@ export function appendStreamReasoning(threadId: string, chunk: string): void {
 
 export function readAccumulatedReasoning(threadId: string): string {
   return activeStreams.get(threadId)?.reasoning ?? "";
+}
+
+export function appendDeliveredText(threadId: string, chunk: string): void {
+  const state = activeStreams.get(threadId);
+  if (!state || !chunk) return;
+  state.deliveredText += chunk;
+}
+
+export function readDeliveredText(threadId: string): string {
+  return activeStreams.get(threadId)?.deliveredText ?? "";
 }
 
 export function setResolvedModel(threadId: string, model: string): void {
