@@ -186,7 +186,7 @@ export async function handleInbound(
       //     ("Reasoning:\n_line_\n…").  Also a snapshot — same delta approach.
       let partialSentLength = 0;      // tracks stripped-snapshot length for delta
       let rawPartialSentLength = 0;   // tracks raw-snapshot length for accumulation
-      let lastReasoningSnapshot = "";
+      let lastReasoningLength = 0;    // tracks plain-text reasoning chars already sent
       const onPartialReply = (payload: { text?: string }): void => {
         const rawFull = typeof payload?.text === "string" ? payload.text : "";
         // Accumulate the RAW snapshot so reasoning can be extracted at done-time.
@@ -328,24 +328,30 @@ export async function handleInbound(
           replyOptions: Object.assign(
             {
               disableBlockStreaming: true,
+              reasoningMode: "stream" as const,
               ...(data.reasoningEffort ? { reasoningEffort: data.reasoningEffort } : {}),
               onPartialReply,
               onAssistantMessageStart: () => {
                 partialSentLength = 0;
                 rawPartialSentLength = 0;
-                lastReasoningSnapshot = "";
+                lastReasoningLength = 0;
               },
               onReasoningStream: (payload: { text?: string }) => {
-                const fullReasoning =
+                const fullFormatted =
                   typeof payload?.text === "string" ? payload.text : "";
-                if (!fullReasoning) return;
-                // onReasoningStream fires with the full accumulated reasoning
-                // snapshot on each call — compute the incremental delta.
-                const delta = fullReasoning.startsWith(lastReasoningSnapshot)
-                  ? fullReasoning.slice(lastReasoningSnapshot.length)
-                  : fullReasoning;
-                if (!delta) return;
-                lastReasoningSnapshot = fullReasoning;
+                if (!fullFormatted) return;
+                // OpenClaw delivers the full accumulated reasoning as a snapshot
+                // formatted as "Reasoning:\n_<text>_" (Markdown italic wrapper).
+                // Strip the header and outer italic markers to get raw plain text,
+                // then use length-based delta so the closing "_" doesn't break
+                // startsWith comparisons as content grows.
+                const plain = fullFormatted
+                  .replace(/^Reasoning:\n/i, "")
+                  .replace(/^_+/, "")
+                  .replace(/_+$/, "");
+                if (!plain || plain.length <= lastReasoningLength) return;
+                const delta = plain.slice(lastReasoningLength);
+                lastReasoningLength = plain.length;
                 appendStreamReasoning(data.conversationId, delta);
                 writeSse("reasoning", { text: delta });
               },
