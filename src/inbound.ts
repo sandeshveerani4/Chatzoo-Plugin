@@ -11,6 +11,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
+import { setActiveSoulMd } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
 import {
   appendDeliveredText,
@@ -35,6 +36,7 @@ interface InboundBody {
   userId: string;
   model?: string;
   reasoningEffort?: string;
+  activeSoulMd?: string | null;
 }
 
 const INBOUND_DISPATCH_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
@@ -119,6 +121,10 @@ export async function handleInbound(
       });
       return;
     }
+
+    // Update active soul for this OpenClaw instance so the before_prompt_build
+    // hook can inject it as the system prompt on the next agent run.
+    setActiveSoulMd(data.activeSoulMd ?? null);
 
     // ── Session reset commands ───────────────────────────────────────────────
     // Intercept /new, /reset, /clear etc. before dispatching to the agent.

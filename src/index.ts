@@ -10,6 +10,7 @@
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { buildChannel } from "./channel.js";
+import { getActiveSoulMd } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
 import { registerEventRoutes } from "./events.js";
 import { handleInbound } from "./inbound.js";
@@ -105,6 +106,15 @@ export default {
       baseUrl: cfg.providerBaseUrl || `${cfg.gatewayUrl}/v1/computer/llm`,
       apiKey: cfg.providerApiKey,
       computerDefaultModel: cfg.computerDefaultModel,
+    });
+
+    // Inject the active agent soul as the system prompt before each agent run.
+    // The soul is received from the gateway via the inbound webhook body and
+    // stored in activeAgent.ts. This replaces proxy-level system message injection.
+    api.on("before_prompt_build", () => {
+      const soul = getActiveSoulMd();
+      if (!soul) return;
+      return { systemPrompt: soul };
     });
 
     api.logger.info("ChatZoo channel plugin registered");
