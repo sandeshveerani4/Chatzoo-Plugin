@@ -66,6 +66,12 @@ function resolvePluginConfig(api: OpenClawPluginApi): PluginConfig {
   };
 }
 
+// Guard against OpenClaw calling register() more than once (e.g. on channel
+// reconnect or plugin hot-reload events).  Duplicate registrations stack up
+// multiple handlers for every hook/route/channel, multiplying work per request
+// and starving the event loop — which causes CDP/browser tool timeouts.
+let _registered = false;
+
 /**
  * Main plugin export. OpenClaw calls register(api) to initialize the plugin.
  */
@@ -76,10 +82,28 @@ export default {
     "Real-time event-driven bridge between OpenClaw and the ChatZoo iOS app backend",
 
   register(api: OpenClawPluginApi) {
+    const cfg = resolvePluginConfig(api);
+
+    // Always register the model provider — OpenClaw calls register() on fresh
+    // registries when resolving implicit providers (activate:false), and the
+    // provider must be present in each of those registries for catalog.run to
+    // be invoked. Provider registration is stateless and safe to repeat.
+    registerChatzooProvider(api, {
+      baseUrl: cfg.providerBaseUrl || `${cfg.gatewayUrl}/v1/computer/llm`,
+      apiKey: cfg.providerApiKey,
+      computerDefaultModel: cfg.computerDefaultModel,
+    });
+
+    if (_registered) {
+      api.logger?.debug?.(
+        "ChatZoo plugin already registered — skipping duplicate register() call",
+      );
+      return;
+    }
+    _registered = true;
+
     // Persist runtime reference for use across modules (outbound, inbound, events)
     runtimeStore.set(api.runtime);
-
-    const cfg = resolvePluginConfig(api);
 
     // Register the ChatZoo messaging channel surface
     api.registerChannel({ plugin: buildChannel() });
@@ -99,14 +123,6 @@ export default {
 
     // Agent-facing helpers so OpenClaw understands ChatZoo routing/reminder semantics
     registerChatzooTools(api);
-
-    // Register ChatZoo as a model provider so OpenClaw resolves real cost
-    // rates from OpenRouter's catalog — works for any upstream model.
-    registerChatzooProvider(api, {
-      baseUrl: cfg.providerBaseUrl || `${cfg.gatewayUrl}/v1/computer/llm`,
-      apiKey: cfg.providerApiKey,
-      computerDefaultModel: cfg.computerDefaultModel,
-    });
 
     // Inject the active agent soul as the system prompt before each agent run.
     // The soul is received from the gateway via the inbound webhook body and
