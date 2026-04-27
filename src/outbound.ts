@@ -33,6 +33,7 @@ export interface DeliverOptions {
   content: string;
   messageId: string;
   imageUrls?: string[];
+  channelData?: Record<string, unknown>;
 }
 
 export interface StreamEventOptions {
@@ -96,6 +97,7 @@ export async function deliverMessage(
     ...(opts.imageUrls && opts.imageUrls.length > 0
       ? { imageUrls: opts.imageUrls }
       : {}),
+    ...(opts.channelData ? { channelData: opts.channelData } : {}),
   };
 
   try {

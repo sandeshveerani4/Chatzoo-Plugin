@@ -91,6 +91,16 @@ export function buildChannel() {
       collectWarnings: () => [],
     },
 
+    execApprovals: {
+      // ChatZoo supports exec approvals: the approval request message (with
+      // channelData.execApproval) is delivered to the iOS app, which renders
+      // approve/deny buttons. The user's tap sends "/approve <id> allow-once"
+      // (or deny) back as a regular inbound message, which OpenClaw handles.
+      getInitiatingSurfaceState: () => ({ kind: "enabled" as const }),
+      shouldSuppressLocalPrompt: () => true,
+      hasConfiguredDmRoute: () => false,
+    },
+
     messaging: {
       normalizeTarget: (target: string) => {
         const trimmed = target?.trim();
@@ -158,6 +168,9 @@ export function buildChannel() {
           content: fullText,
           messageId: generatedMessageId,
           ...(storagePaths.length > 0 ? { imageUrls: storagePaths } : {}),
+          ...(rest.channelData && typeof rest.channelData === "object"
+            ? { channelData: rest.channelData as Record<string, unknown> }
+            : {}),
         });
         return {
           channel: CHANNEL_ID,
