@@ -67,12 +67,12 @@ async function cronRpc(
   });
 }
 
-function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
+function buildScheduleTool(gateway: GatewayOpts): AnyAgentTool {
   return {
-    name: "chatzoo_remind",
-    label: "ChatZoo Remind",
+    name: "chatzoo_schedule",
+    label: "ChatZoo Schedule",
     description:
-      "Create, list, or remove ChatZoo reminders. Directly schedules cron jobs on the OpenClaw gateway.",
+      "Schedule, list, or remove tasks on the OpenClaw gateway. The scheduled agent will execute the content exactly as given — pass the full task instruction, not just a reminder note. Use this for any future or recurring action: browsing, sending messages, running scripts, etc.",
     parameters: {
       type: "object",
       properties: {
@@ -83,7 +83,7 @@ function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
         },
         content: {
           type: "string",
-          description: "Reminder content (required for action=add).",
+          description: "The full task or instruction for the agent to execute at the scheduled time. Write it as a direct instruction (e.g. 'Go to linkedin.com and send a connection request to John Doe'), not as a reminder note.",
         },
         cronExpr: {
           type: "string",
@@ -181,15 +181,11 @@ function buildRemindTool(gateway: GatewayOpts): AnyAgentTool {
         }
       }
 
-      // Frame the message as a reminder so the cron agent notifies the user
-      // instead of trying to perform the activity.
-      const reminderMessage = `Please send the user a short reminder message that it is time to: ${p.content.trim()}. Just notify them — do not attempt to perform the activity yourself.`;
-
       const job: Record<string, unknown> = {
         name: p.name ?? "ChatZoo reminder",
         enabled: true,
         schedule,
-        payload: { kind: "agentTurn", message: reminderMessage },
+        payload: { kind: "agentTurn", message: p.content.trim() },
         wakeMode: "now",
         sessionTarget: "isolated",
         deleteAfterRun: oneShot,
@@ -262,7 +258,7 @@ function buildChannelInfoTool(): AnyAgentTool {
         return jsonText({
           reminders: {
             recommendation:
-              "Use chatzoo_remind with the conversationId to keep reminder replies in the same ChatZoo thread.",
+              "Use chatzoo_schedule with the conversationId to keep reminder replies in the same ChatZoo thread.",
             sessionKeyFormat: base.sessionKeyFormat,
           },
         });
@@ -291,7 +287,7 @@ export function registerChatzooTools(api: OpenClawPluginApi): void {
     gateway.url = `ws://127.0.0.1:${event.port}`;
   });
 
-  api.registerTool(buildRemindTool(gateway) as any, { name: "chatzoo_remind" });
+  api.registerTool(buildScheduleTool(gateway) as any, { name: "chatzoo_schedule" });
   api.registerTool(buildChannelInfoTool() as any, {
     name: "chatzoo_channel_info",
   });
