@@ -41,7 +41,7 @@ async function cronRpc(
       ...(opts.token ? { token: opts.token } : {}),
       mode: "backend" as any,
       clientName: "gateway-client" as any,
-      scopes: ["operator.read", "operator.write"],
+      scopes: ["operator.read", "operator.write", "operator.admin"],
       onHelloOk: () => {
         client
           .request(method, params, { timeoutMs: 10_000 })
