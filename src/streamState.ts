@@ -6,6 +6,7 @@ type StreamState = {
   deliveredText: string;
   resolvedModel: string;
   costUsd: number;
+  toolCalls: string;
 };
 
 const activeStreams = new Map<string, StreamState>();
@@ -19,6 +20,7 @@ export function beginStream(threadId: string): void {
     deliveredText: "",
     resolvedModel: "",
     costUsd: 0,
+    toolCalls: "",
   });
 }
 
@@ -85,6 +87,15 @@ export function addCostUsd(threadId: string, cost: number): void {
 
 export function getCostUsd(threadId: string): number {
   return activeStreams.get(threadId)?.costUsd ?? 0;
+}
+
+export function appendStreamToolCall(threadId: string, fence: string): void {
+  const state = activeStreams.get(threadId);
+  if (state) state.toolCalls += fence;
+}
+
+export function readAccumulatedToolCalls(threadId: string): string {
+  return activeStreams.get(threadId)?.toolCalls ?? "";
 }
 
 export function endStream(threadId: string): void {

@@ -18,11 +18,13 @@ import {
   appendStreamChunk,
   appendStreamMedia,
   appendStreamReasoning,
+  appendStreamToolCall,
   beginStream,
   endStream,
   readAccumulatedStream,
   readAccumulatedMedia,
   readAccumulatedReasoning,
+  readAccumulatedToolCalls,
   readDeliveredText,
   setResolvedModel,
   getResolvedModel,
@@ -424,6 +426,7 @@ export async function handleInbound(
                 });
                 const fence = `\n\`\`\`tool-call\n${json}\n\`\`\`\n`;
                 appendStreamChunk(data.conversationId, fence);
+                appendStreamToolCall(data.conversationId, fence);
                 writeSse("delta", { text: fence });
               },
             },
@@ -492,6 +495,9 @@ export async function handleInbound(
             const deliveredText = readDeliveredText(data.conversationId);
             if (!rawMessage && !deliveredText) return;
             const imageUrls = readAccumulatedMedia(data.conversationId);
+            const toolCallsPrefix = readAccumulatedToolCalls(
+              data.conversationId,
+            );
             let reasoning = readAccumulatedReasoning(data.conversationId);
 
             if (!reasoning && rawMessage) {
@@ -509,6 +515,9 @@ export async function handleInbound(
                 reasoning = extracted.thinking;
               if (!assistantMessage && extracted.thinking)
                 assistantMessage = extracted.thinking;
+            }
+            if (toolCallsPrefix) {
+              assistantMessage = toolCallsPrefix + assistantMessage;
             }
             const resolvedModel = getResolvedModel(data.conversationId);
             const costUsd = getCostUsd(data.conversationId);
@@ -563,6 +572,7 @@ export async function handleInbound(
       const deliveredText = readDeliveredText(data.conversationId);
       const imageUrls = readAccumulatedMedia(data.conversationId);
       let reasoning = readAccumulatedReasoning(data.conversationId);
+      const toolCallsPrefix = readAccumulatedToolCalls(data.conversationId);
 
       // Extract reasoning from raw accumulated content regardless of path —
       // covers models that embed <think> blocks in onPartialReply rather than
@@ -584,6 +594,11 @@ export async function handleInbound(
         if (!reasoning && extracted.thinking) reasoning = extracted.thinking;
         if (!assistantMessage && extracted.thinking)
           assistantMessage = extracted.thinking;
+      }
+      // Prepend tool-call fences so they appear in the DB record just as they
+      // did during streaming.
+      if (toolCallsPrefix) {
+        assistantMessage = toolCallsPrefix + assistantMessage;
       }
       const resolvedModel = getResolvedModel(data.conversationId);
       const costUsd = getCostUsd(data.conversationId);
