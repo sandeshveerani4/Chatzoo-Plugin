@@ -200,6 +200,11 @@ export default {
           const ready = new Promise<void>((res, rej) => {
             resolveReady = res;
             rejectReady = rej;
+            // 10 s hard timeout in case neither callback fires
+            setTimeout(
+              () => rej(new Error("gateway connect timeout")),
+              10_000,
+            ).unref?.();
           });
 
           gatewayClient = await createOperatorApprovalsGatewayClient({
@@ -209,6 +214,9 @@ export default {
             onHelloOk: () => resolveReady(),
             onConnectError: (err: Error) => rejectReady(err),
           });
+
+          // The constructor does NOT auto-start the WebSocket — must call start().
+          (gatewayClient as any).start();
 
           await ready;
 
