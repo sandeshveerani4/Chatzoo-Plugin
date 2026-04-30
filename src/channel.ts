@@ -223,6 +223,37 @@ export function buildChannel() {
           chatId: String(to),
         };
       },
+
+      // Called when the payload has structured channelData (e.g. execApproval).
+      // The runtime prefers sendPayload over sendText when channelData is present,
+      // so this is the path that carries the approval card to the iOS app.
+      sendPayload: async ({ to, cfg, accountId, payload }: any) => {
+        const account = resolveAccount(cfg ?? {}, accountId);
+        if (!account.gatewayUrl || !account.hookToken) {
+          throw new Error(
+            "chatzoo: gatewayUrl and hookToken are required in config",
+          );
+        }
+        const generatedMessageId = `chatzoo-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+        await deliverMessage({
+          gatewayUrl: account.gatewayUrl,
+          hookToken: account.hookToken,
+          deliveryTimeoutMs: account.deliveryTimeoutMs,
+          threadId: String(to),
+          content: payload?.text ?? "",
+          messageId: generatedMessageId,
+          ...(payload?.channelData &&
+          typeof payload.channelData === "object" &&
+          Object.keys(payload.channelData).length > 0
+            ? { channelData: payload.channelData as Record<string, unknown> }
+            : {}),
+        });
+        return {
+          channel: CHANNEL_ID,
+          messageId: generatedMessageId,
+          chatId: String(to),
+        };
+      },
     },
   };
 }
