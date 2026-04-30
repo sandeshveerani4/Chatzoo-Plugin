@@ -185,16 +185,33 @@ export default {
           });
         }
 
-        // Resolve the approval via OpenClaw gateway WebSocket
+        // Resolve the approval via OpenClaw gateway WebSocket.
+        // createOperatorApprovalsGatewayClient returns the client immediately after
+        // starting the WS connection — before the socket is OPEN. Calling
+        // request() before the handshake completes throws "gateway not connected".
+        // We pass onHelloOk/onConnectError to a promise that resolves only once
+        // the client is fully authenticated and ready to accept requests.
         let gatewayClient: Awaited<
           ReturnType<typeof createOperatorApprovalsGatewayClient>
         > | null = null;
         try {
+          let resolveReady!: () => void;
+          let rejectReady!: (err: Error) => void;
+          const ready = new Promise<void>((res, rej) => {
+            resolveReady = res;
+            rejectReady = rej;
+          });
+
           gatewayClient = await createOperatorApprovalsGatewayClient({
             config: cfg.openclawConfig as any,
             gatewayUrl: "ws://localhost:18789",
             clientDisplayName: "chatzoo-approve",
+            onHelloOk: () => resolveReady(),
+            onConnectError: (err: Error) => rejectReady(err),
           });
+
+          await ready;
+
           await gatewayClient.request("exec.approval.resolve", {
             id: approvalId,
             decision,
