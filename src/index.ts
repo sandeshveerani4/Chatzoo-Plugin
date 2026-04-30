@@ -8,7 +8,9 @@
  *   - cron.afterExecute hook         forwards cron results to gateway
  *   - agent.heartbeat hook           forwards heartbeat pings to gateway
  */
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { createOperatorApprovalsGatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
 import { buildChannel } from "./channel.js";
 import { getActiveSoulMd } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
@@ -115,6 +117,97 @@ export default {
       handler: async (req, res) => {
         await handleInbound(req, res, cfg);
         return true;
+      },
+    });
+
+    // Approve: llm-gateway → OpenClaw (user approves/denies an exec approval)
+    // Uses HMAC-SHA256 auth (same hookToken as /webhook/chatzoo) and resolves
+    // the pending approval via the OpenClaw gateway's exec.approval.resolve method.
+    api.registerHttpRoute({
+      path: "/webhook/chatzoo/approve",
+      auth: "plugin",
+      handler: async (req, res) => {
+        const writeJson = (
+          status: number,
+          body: Record<string, unknown>,
+        ): boolean => {
+          if (res.headersSent) return true;
+          res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify(body));
+          return true;
+        };
+
+        // Read body
+        let body: Buffer;
+        try {
+          body = await new Promise<Buffer>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            req.on("data", (chunk: Buffer) => chunks.push(chunk));
+            req.on("end", () => resolve(Buffer.concat(chunks)));
+            req.on("error", reject);
+          });
+        } catch {
+          return writeJson(400, { error: "bad_request" });
+        }
+
+        // Verify HMAC-SHA256 signature
+        const sigHeader =
+          (req.headers["x-hook-signature"] as string | undefined) ?? "";
+        const expected = createHmac("sha256", cfg.hookToken)
+          .update(body)
+          .digest("hex");
+        const expectedBuf = Buffer.from(expected, "utf8");
+        const actualBuf = Buffer.from(sigHeader, "utf8");
+        if (
+          expectedBuf.length !== actualBuf.length ||
+          !timingSafeEqual(expectedBuf, actualBuf)
+        ) {
+          return writeJson(401, { error: "unauthorized" });
+        }
+
+        let parsed: { approvalId?: string; decision?: string };
+        try {
+          parsed = JSON.parse(body.toString("utf8"));
+        } catch {
+          return writeJson(400, { error: "invalid_json" });
+        }
+
+        const { approvalId, decision } = parsed;
+        if (
+          !approvalId ||
+          !decision ||
+          !["allow-once", "allow-always", "deny"].includes(decision)
+        ) {
+          return writeJson(400, {
+            error: "bad_request",
+            message: "Missing or invalid approvalId/decision",
+          });
+        }
+
+        // Resolve the approval via OpenClaw gateway WebSocket
+        let gatewayClient: Awaited<
+          ReturnType<typeof createOperatorApprovalsGatewayClient>
+        > | null = null;
+        try {
+          gatewayClient = await createOperatorApprovalsGatewayClient({
+            config: cfg.openclawConfig as any,
+            gatewayUrl: "ws://localhost:18789",
+            clientDisplayName: "chatzoo-approve",
+          });
+          await gatewayClient.request("exec.approval.resolve", {
+            id: approvalId,
+            decision,
+          });
+          return writeJson(200, { ok: true });
+        } catch (err: any) {
+          return writeJson(502, {
+            error: "resolve_failed",
+            message: String(err?.message ?? err),
+          });
+        } finally {
+          gatewayClient?.stop();
+        }
       },
     });
 

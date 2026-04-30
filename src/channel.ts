@@ -94,11 +94,56 @@ export function buildChannel() {
     execApprovals: {
       // ChatZoo supports exec approvals: the approval request message (with
       // channelData.execApproval) is delivered to the iOS app, which renders
-      // approve/deny buttons. The user's tap sends "/approve <id> allow-once"
-      // (or deny) back as a regular inbound message, which OpenClaw handles.
+      // approve/deny buttons. The user's tap calls POST /v1/computer/approve
+      // on the llm-gateway, which forwards to POST /webhook/chatzoo/approve
+      // on the OpenClaw plugin to resolve the pending approval.
       getInitiatingSurfaceState: () => ({ kind: "enabled" as const }),
       shouldSuppressLocalPrompt: () => true,
       hasConfiguredDmRoute: () => false,
+      buildPendingPayload: ({
+        request,
+      }: {
+        request: {
+          id: string;
+          request: {
+            command: string;
+            commandPreview?: string | null;
+            cwd?: string | null;
+            host?: string | null;
+            security?: string | null;
+            ask?: string | null;
+            agentId?: string | null;
+          };
+          expiresAtMs: number;
+        };
+        nowMs: number;
+        cfg: unknown;
+        target: unknown;
+      }) => {
+        const cmd = (request.request.commandPreview ??
+          request.request.command) as string;
+        const descParts: string[] = [];
+        if (request.request.host)
+          descParts.push(`Host: ${request.request.host}`);
+        if (request.request.cwd) descParts.push(`CWD: ${request.request.cwd}`);
+        if (request.request.security)
+          descParts.push(`Security: ${request.request.security}`);
+        if (request.request.ask) descParts.push(`Ask: ${request.request.ask}`);
+        if (request.request.agentId)
+          descParts.push(`Agent: ${request.request.agentId}`);
+        return {
+          text: `Exec approval needed: \`${cmd}\``,
+          channelData: {
+            execApproval: {
+              id: request.id,
+              name: cmd,
+              description:
+                descParts.length > 0 ? descParts.join(" | ") : undefined,
+              expiresAtMs: request.expiresAtMs,
+            },
+          },
+        };
+      },
     },
 
     messaging: {
