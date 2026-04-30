@@ -10,7 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { createOperatorApprovalsGatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
+import { GatewayClient } from "openclaw/plugin-sdk/gateway-runtime";
 import { buildChannel } from "./channel.js";
 import { getActiveSoulMd } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
@@ -185,16 +185,22 @@ export default {
           });
         }
 
-        // Resolve the approval via OpenClaw gateway WebSocket.
-        // createOperatorApprovalsGatewayClient returns the client immediately after
-        // starting the WS connection — before the socket is OPEN. Calling
-        // request() before the handshake completes throws "gateway not connected".
-        // We pass onHelloOk/onConnectError to a promise that resolves only once
-        // the client is fully authenticated and ready to accept requests.
-        let gatewayClient: Awaited<
-          ReturnType<typeof createOperatorApprovalsGatewayClient>
-        > | null = null;
+        // Resolve the approval via a short-lived GatewayClient connecting to
+        // the local OpenClaw gateway. We construct the client directly to avoid
+        // the broken secret-resolution path in createOperatorApprovalsGatewayClient
+        // (which errors with "gateway token missing" when the token is not
+        // available via env/secret-refs at request time).
+        // Token is read from config.gateway.auth.token (plain string only) with
+        // OPENCLAW_GATEWAY_TOKEN env var as fallback — same sources the CLI uses.
+        let gatewayClient: InstanceType<typeof GatewayClient> | null = null;
         try {
+          const openclawCfg = cfg.openclawConfig as any;
+          const rawToken = openclawCfg?.gateway?.auth?.token;
+          const gatewayToken: string | undefined =
+            typeof rawToken === "string" && rawToken
+              ? rawToken
+              : process.env.OPENCLAW_GATEWAY_TOKEN || undefined;
+
           let resolveReady!: () => void;
           let rejectReady!: (err: Error) => void;
           const ready = new Promise<void>((res, rej) => {
@@ -207,16 +213,18 @@ export default {
             ).unref?.();
           });
 
-          gatewayClient = await createOperatorApprovalsGatewayClient({
-            config: cfg.openclawConfig as any,
-            gatewayUrl: "ws://localhost:18789",
+          gatewayClient = new GatewayClient({
+            url: "ws://localhost:18789",
+            token: gatewayToken,
             clientDisplayName: "chatzoo-approve",
+            mode: "backend" as any,
+            scopes: ["operator.approvals"],
             onHelloOk: () => resolveReady(),
             onConnectError: (err: Error) => rejectReady(err),
           });
 
-          // The constructor does NOT auto-start the WebSocket — must call start().
-          (gatewayClient as any).start();
+          // GatewayClient constructor does NOT auto-start — must call start().
+          gatewayClient.start();
 
           await ready;
 
