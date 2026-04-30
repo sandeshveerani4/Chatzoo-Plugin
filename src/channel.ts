@@ -144,6 +144,9 @@ export function buildChannel() {
           },
         };
       },
+      // Suppress the "✅ Exec approval resolved" message — iOS has already
+      // handled the approval inline and the agent will stream its response.
+      buildResolvedPayload: () => null,
     },
 
     messaging: {
