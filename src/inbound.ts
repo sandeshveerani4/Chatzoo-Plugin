@@ -39,6 +39,10 @@ interface InboundBody {
   model?: string;
   reasoningEffort?: string;
   activeSoulMd?: string | null;
+  /** The active agent's slug/ID (e.g. "zeus"). Used as the OpenClaw session
+   * peer ID so sessions are keyed per agent instead of per DB conversation UUID,
+   * giving the agent persistent memory and a readable name in the control UI. */
+  agentId?: string | null;
 }
 
 const INBOUND_DISPATCH_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
@@ -142,11 +146,12 @@ export async function handleInbound(
       const resolveStorePath = runtime?.channel?.session?.resolveStorePath;
       if (resolveAgentRoute && cfg.openclawConfig) {
         try {
+          const sessionPeerId = data.agentId?.trim() || data.conversationId;
           const route = resolveAgentRoute({
             cfg: cfg.openclawConfig,
             channel: "chatzoo",
             accountId: "default",
-            peer: { kind: "direct", id: data.conversationId },
+            peer: { kind: "direct", id: sessionPeerId },
           });
           const storePath = resolveStorePath?.(
             (cfg.openclawConfig as { session?: { store?: string } })?.session
@@ -276,7 +281,13 @@ export async function handleInbound(
         cfg: cfg.openclawConfig,
         channel: "chatzoo",
         accountId: "default",
-        peer: { kind: "direct", id: data.conversationId },
+        // Use agentId as the peer so OpenClaw sessions are keyed per agent
+        // (persistent history, readable name in control UI). Fall back to
+        // conversationId when no agent is active.
+        peer: {
+          kind: "direct",
+          id: data.agentId?.trim() || data.conversationId,
+        },
       });
 
       const ctxPayload = finalizeInboundContext(
