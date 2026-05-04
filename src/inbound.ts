@@ -11,7 +11,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
-import { setActiveSoulMd } from "./activeAgent.js";
+import { soulContext } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
 import {
   appendDeliveredText,
@@ -126,7 +126,7 @@ export async function handleInbound(
 
     // Update active soul for this OpenClaw instance so the before_prompt_build
     // hook can inject it as the system prompt on the next agent run.
-    setActiveSoulMd(data.activeSoulMd ?? null);
+    // NOTE: soul is scoped per-request via AsyncLocalStorage — see activeAgent.ts.
 
     // ── Session reset commands ───────────────────────────────────────────────
     // Intercept /new, /reset, /clear etc. before dispatching to the agent.
@@ -446,13 +446,17 @@ export async function handleInbound(
         });
 
       // Start dispatch — no timeout here; it runs until completion regardless.
-      const dispatchPromise = modelContext.run(
-        {
-          model: data.model,
-          conversationId: data.conversationId,
-          reasoningEffort: data.reasoningEffort,
-        },
-        runDispatch,
+      const dispatchPromise = soulContext.run(
+        { soul: data.activeSoulMd ?? null },
+        () =>
+          modelContext.run(
+            {
+              model: data.model,
+              conversationId: data.conversationId,
+              reasoningEffort: data.reasoningEffort,
+            },
+            runDispatch,
+          ),
       );
 
       type Outcome =

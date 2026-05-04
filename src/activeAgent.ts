@@ -1,18 +1,18 @@
 /**
- * Holds the active agent soul for this OpenClaw instance.
+ * Per-request active soul context using AsyncLocalStorage.
  *
- * Set by the inbound webhook handler whenever the gateway includes an
- * `activeSoulMd` field in the request body.
- * Read by the `before_prompt_build` hook to override the system prompt so
- * the active agent persona takes effect without any SOUL.md file writes.
+ * Each inbound webhook wraps its dispatch in `soulContext.run({ soul })` so
+ * concurrent requests cannot corrupt each other's agent personality — mirrors
+ * the pattern used by modelContext.ts for the model override.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 
-let _activeSoulMd: string | null = null;
-
-export function setActiveSoulMd(soul: string | null): void {
-  _activeSoulMd = soul ?? null;
+interface SoulContext {
+  soul: string | null;
 }
 
+export const soulContext = new AsyncLocalStorage<SoulContext>();
+
 export function getActiveSoulMd(): string | null {
-  return _activeSoulMd;
+  return soulContext.getStore()?.soul ?? null;
 }
