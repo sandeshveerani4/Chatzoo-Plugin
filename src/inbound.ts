@@ -277,18 +277,24 @@ export async function handleInbound(
         writeSse("delta", { text: delta });
       };
 
+      // The session peer — agentId when available so OpenClaw sessions are
+      // keyed per agent (persistent history, readable name in control UI).
+      // Fall back to conversationId when no agent is set.
+      const sessionPeerId = data.agentId?.trim() || data.conversationId;
+
       const route = resolveAgentRoute({
         cfg: cfg.openclawConfig,
         channel: "chatzoo",
         accountId: "default",
-        // Use agentId as the peer so OpenClaw sessions are keyed per agent
-        // (persistent history, readable name in control UI). Fall back to
-        // conversationId when no agent is active.
         peer: {
           kind: "direct",
-          id: data.agentId?.trim() || data.conversationId,
+          id: sessionPeerId,
         },
       });
+
+      runtime.log?.info?.(
+        `chatzoo inbound: sessionPeerId=${sessionPeerId} sessionKey=${route.sessionKey} conversationId=${data.conversationId}`,
+      );
 
       const ctxPayload = finalizeInboundContext(
         {
@@ -299,7 +305,9 @@ export async function handleInbound(
           ChatType: "direct",
           From: data.userId,
           SenderId: data.userId,
-          To: data.conversationId,
+          // To drives OpenClaw's session key — use the agent peer ID so sessions
+          // are named/keyed per agent, not per DB conversation UUID or userId.
+          To: sessionPeerId,
           Body: data.message,
           BodyForAgent: data.message,
           MessageId: `chatzoo-inbound-${Date.now()}`,
