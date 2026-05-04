@@ -277,10 +277,13 @@ export async function handleInbound(
         writeSse("delta", { text: delta });
       };
 
-      // The session peer — agentId when available so OpenClaw sessions are
-      // keyed per agent (persistent history, readable name in control UI).
-      // Fall back to conversationId when no agent is set.
-      const sessionPeerId = data.agentId?.trim() || data.conversationId;
+      // When an agent is active, build an explicit per-peer session key so each
+      // agent slug gets its own isolated session history and a readable name in
+      // the OpenClaw control UI.  resolveAgentRoute uses dmScope="main" by
+      // default which ignores peer.id entirely, returning "agent:<id>:main" for
+      // every request — that's what we want for the "no expert" fallback.
+      const activeAgentSlug = data.agentId?.trim() || null;
+      const sessionPeerId = activeAgentSlug ?? data.userId;
 
       const route = resolveAgentRoute({
         cfg: cfg.openclawConfig,
@@ -292,20 +295,19 @@ export async function handleInbound(
         },
       });
 
-      // Build an explicit per-agent session key.
-      //
-      // resolveAgentRoute uses dmScope="main" by default, which ignores the
-      // peer.id entirely and returns "agent:<agentId>:main" for every request —
-      // meaning all ChatZoo agents share the same session history.
-      //
-      // We override this by constructing a "per-peer" key directly:
-      //   agent:<resolvedAgentId>:direct:<agentSlug>
-      // This matches the format produced by dmScope="per-peer" and guarantees
-      // each agent slug gets its own isolated session.
-      const agentSessionKey = `agent:${route.agentId}:direct:${sessionPeerId.toLowerCase()}`;
+      // For agent sessions: override with a per-peer key so each agent slug
+      // gets distinct history.  For the no-expert chat: use route.sessionKey
+      // as-is (agent:main:main) to preserve the original behaviour.
+      const agentSessionKey = activeAgentSlug
+        ? `agent:${route.agentId}:direct:${activeAgentSlug.toLowerCase()}`
+        : route.sessionKey;
+
+      // ConversationLabel: show the agent slug in the UI, or let OpenClaw
+      // derive it from From (userId) for the no-expert chat.
+      const conversationLabel = activeAgentSlug ?? undefined;
 
       runtime.log?.info?.(
-        `chatzoo inbound: sessionPeerId=${sessionPeerId} routeSessionKey=${route.sessionKey} agentSessionKey=${agentSessionKey} conversationId=${data.conversationId}`,
+        `chatzoo inbound: activeAgentSlug=${activeAgentSlug ?? "none"} sessionKey=${agentSessionKey} conversationId=${data.conversationId}`,
       );
 
       const ctxPayload = finalizeInboundContext(
@@ -322,14 +324,10 @@ export async function handleInbound(
           BodyForAgent: data.message,
           MessageId: `chatzoo-inbound-${Date.now()}`,
           Timestamp: Date.now(),
-          // Use our explicit per-agent key — this is what recordInboundSession
-          // and dispatchReplyFromConfig use to load/store session history.
           SessionKey: agentSessionKey,
-          // ConversationLabel is set explicitly so the OpenClaw control UI shows
-          // the agent slug (e.g. "zeus") rather than the userId (ctx.From).
-          // forceConversationLabel must be false so finalizeInboundContext keeps
-          // our value instead of re-deriving it from SenderName/From.
-          ConversationLabel: sessionPeerId,
+          ...(conversationLabel
+            ? { ConversationLabel: conversationLabel }
+            : {}),
           OriginatingChannel: "chatzoo",
           OriginatingTo: data.conversationId,
         },
@@ -337,7 +335,9 @@ export async function handleInbound(
           forceBodyForAgent: true,
           forceBodyForCommands: false,
           forceChatType: true,
-          forceConversationLabel: false,
+          // Only force-keep our explicit label when we set one; otherwise let
+          // finalizeInboundContext derive the label from From (userId).
+          forceConversationLabel: Boolean(conversationLabel),
         },
       );
 
