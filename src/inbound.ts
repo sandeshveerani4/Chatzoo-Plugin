@@ -292,8 +292,20 @@ export async function handleInbound(
         },
       });
 
+      // Build an explicit per-agent session key.
+      //
+      // resolveAgentRoute uses dmScope="main" by default, which ignores the
+      // peer.id entirely and returns "agent:<agentId>:main" for every request —
+      // meaning all ChatZoo agents share the same session history.
+      //
+      // We override this by constructing a "per-peer" key directly:
+      //   agent:<resolvedAgentId>:direct:<agentSlug>
+      // This matches the format produced by dmScope="per-peer" and guarantees
+      // each agent slug gets its own isolated session.
+      const agentSessionKey = `agent:${route.agentId}:direct:${sessionPeerId.toLowerCase()}`;
+
       runtime.log?.info?.(
-        `chatzoo inbound: sessionPeerId=${sessionPeerId} sessionKey=${route.sessionKey} conversationId=${data.conversationId}`,
+        `chatzoo inbound: sessionPeerId=${sessionPeerId} routeSessionKey=${route.sessionKey} agentSessionKey=${agentSessionKey} conversationId=${data.conversationId}`,
       );
 
       const ctxPayload = finalizeInboundContext(
@@ -305,14 +317,19 @@ export async function handleInbound(
           ChatType: "direct",
           From: data.userId,
           SenderId: data.userId,
-          // To drives OpenClaw's session key — use the agent peer ID so sessions
-          // are named/keyed per agent, not per DB conversation UUID or userId.
           To: sessionPeerId,
           Body: data.message,
           BodyForAgent: data.message,
           MessageId: `chatzoo-inbound-${Date.now()}`,
           Timestamp: Date.now(),
-          SessionKey: route.sessionKey,
+          // Use our explicit per-agent key — this is what recordInboundSession
+          // and dispatchReplyFromConfig use to load/store session history.
+          SessionKey: agentSessionKey,
+          // ConversationLabel is set explicitly so the OpenClaw control UI shows
+          // the agent slug (e.g. "zeus") rather than the userId (ctx.From).
+          // forceConversationLabel must be false so finalizeInboundContext keeps
+          // our value instead of re-deriving it from SenderName/From.
+          ConversationLabel: sessionPeerId,
           OriginatingChannel: "chatzoo",
           OriginatingTo: data.conversationId,
         },
@@ -320,7 +337,7 @@ export async function handleInbound(
           forceBodyForAgent: true,
           forceBodyForCommands: false,
           forceChatType: true,
-          forceConversationLabel: true,
+          forceConversationLabel: false,
         },
       );
 
@@ -333,7 +350,7 @@ export async function handleInbound(
           accountId: route.accountId,
           route: {
             agentId: route.agentId,
-            sessionKey: route.sessionKey,
+            sessionKey: agentSessionKey,
           },
           storePath: resolveStorePath(
             (cfg.openclawConfig as { session?: { store?: string } } | undefined)
