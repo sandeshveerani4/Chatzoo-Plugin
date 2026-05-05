@@ -45,7 +45,7 @@ interface InboundBody {
   agentId?: string | null;
 }
 
-const INBOUND_DISPATCH_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
+const INBOUND_DISPATCH_TIMEOUT_MS = 20 * 60 * 1_000; // 20 minutes — allows for Kimi K2.5's high TTFT + multi-step tool calls
 
 export async function handleInbound(
   req: IncomingMessage,
@@ -236,6 +236,20 @@ export async function handleInbound(
 
     let backgroundMode = false;
     beginStream(data.conversationId);
+
+    // Send SSE keepalive comments every 15 s to prevent GCP's 60-second TCP
+    // idle timeout from dropping the gateway→plugin connection during Kimi's
+    // high time-to-first-token (TTFT).  Cancelled as soon as the first real
+    // token arrives.
+    let firstTokenReceived = false;
+    const keepaliveTimer = setInterval(() => {
+      if (firstTokenReceived || res.writableEnded) {
+        clearInterval(keepaliveTimer);
+        return;
+      }
+      res.write(": keepalive\n\n");
+    }, 15_000);
+
     try {
       runtime.log?.info?.(
         `chatzoo inbound: webhook received for conversation ${data.conversationId}, message="${data.message.slice(0, 80)}"`,
@@ -255,6 +269,7 @@ export async function handleInbound(
       let rawPartialSentLength = 0; // tracks raw-snapshot length for accumulation
       let lastReasoningLength = 0; // tracks plain-text reasoning chars already sent
       const onPartialReply = (payload: { text?: string }): void => {
+        firstTokenReceived = true;
         const rawFull = typeof payload?.text === "string" ? payload.text : "";
         // Accumulate the RAW snapshot so reasoning can be extracted at done-time.
         if (rawFull.length > rawPartialSentLength) {
@@ -665,6 +680,7 @@ export async function handleInbound(
       writeSse("error", { message: msg });
       if (!res.writableEnded) res.end();
     } finally {
+      clearInterval(keepaliveTimer);
       // In background mode the dispatch is still running; it calls endStream
       // itself when it finishes.  Only clean up here for the normal paths.
       if (!backgroundMode) endStream(data.conversationId);
