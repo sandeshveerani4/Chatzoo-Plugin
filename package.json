@@ -6,7 +6,11 @@
     "extensions": [
       "./src/index.ts"
     ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
     "setupEntry": "./src/setup-entry.ts",
+    "runtimeSetupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "chatzoo",
       "label": "ChatZoo",
@@ -14,6 +18,7 @@
     }
   },
   "scripts": {
+    "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
