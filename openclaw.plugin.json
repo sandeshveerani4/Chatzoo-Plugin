@@ -6,6 +6,54 @@
   "channels": [
     "chatzoo"
   ],
+  "channelConfigs": {
+    "chatzoo": {
+      "label": "ChatZoo",
+      "description": "Real-time bridge between OpenClaw and the ChatZoo iOS app backend",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "gatewayUrl": {
+            "type": "string",
+            "description": "ChatZoo llm-gateway base URL"
+          },
+          "hookToken": {
+            "type": "string",
+            "description": "Shared secret for authenticating webhook calls"
+          },
+          "deliveryTimeoutMs": {
+            "type": "number",
+            "description": "Milliseconds to wait for in-app delivery before falling back to push notification"
+          },
+          "computerDefaultModel": {
+            "type": "string",
+            "description": "The real OpenRouter model ID behind chatzoo-default"
+          },
+          "providerBaseUrl": {
+            "type": "string",
+            "description": "Base URL for the gateway LLM proxy"
+          },
+          "providerApiKey": {
+            "type": "string",
+            "description": "Per-user API key the gateway proxy expects"
+          }
+        }
+      },
+      "uiHints": {
+        "gatewayUrl": {
+          "label": "Gateway URL",
+          "placeholder": "https://llm-gateway-xxx.run.app"
+        },
+        "hookToken": {
+          "label": "Hook Token",
+          "sensitive": true
+        },
+        "deliveryTimeoutMs": {
+          "label": "In-app delivery timeout (ms)"
+        }
+      }
+    }
+  },
   "providers": [
     "chatzoo"
   ],
