@@ -22,6 +22,7 @@ function jsonText(value: unknown) {
         text: JSON.stringify(value, null, 2),
       },
     ],
+    details: value,
   };
 }
 

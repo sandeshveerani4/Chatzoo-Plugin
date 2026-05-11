@@ -10,7 +10,8 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/irc";
+import { dispatchInboundReplyWithBase } from "openclaw/plugin-sdk/inbound-reply-dispatch";
+import type { OutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { soulContext } from "./activeAgent.js";
 import { runtimeStore } from "./client.js";
 import {
@@ -381,7 +382,7 @@ export async function handleInbound(
               },
             },
           },
-          deliver: async (payload) => {
+          deliver: async (payload: OutboundReplyPayload) => {
             const text =
               typeof payload?.text === "string"
                 ? payload.text
@@ -427,11 +428,11 @@ export async function handleInbound(
               appendDeliveredText(data.conversationId, text);
             }
           },
-          onRecordError: (err) => {
+          onRecordError: (err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
             runtime.log?.warn?.(`chatzoo inbound record failed: ${msg}`);
           },
-          onDispatchError: (err, info) => {
+          onDispatchError: (err: unknown, info: { kind: string }) => {
             const msg = err instanceof Error ? err.message : String(err);
             runtime.log?.error?.(
               `chatzoo inbound dispatch error [${info.kind}]: ${msg}`,
